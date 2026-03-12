@@ -1,0 +1,32 @@
+{
+  "$schema": "https://tauri.app/schemas/tauri-config.json",
+  "productName": "VisiTexta",
+  "version": "0.1.0",
+  "identifier": "com.visitexta.app",
+  "build": {
+    "beforeDevCommand": "vite",
+    "beforeBuildCommand": "vite build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "VisiTexta",
+        "width": 1200,
+        "height": 800,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "msi"],
+    "icon": [
+      "icons/icon.png"
+    ]
+  }
+}
