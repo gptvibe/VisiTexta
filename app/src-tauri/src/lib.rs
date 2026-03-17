@@ -3,7 +3,7 @@ mod events;
 mod pipeline;
 mod settings;
 mod pdf;
-mod ocr;
+mod llm;
 mod formatting;
 mod models;
 
@@ -71,9 +71,9 @@ fn hydrate_path_for_binaries() {
 }
 
 #[tauri::command]
-fn enqueue_jobs(app: tauri::AppHandle, paths: Vec<String>) -> Result<Vec<JobResult>, String> {
+fn enqueue_jobs(app: tauri::AppHandle, paths: Vec<String>, prompt: Option<String>) -> Result<Vec<JobResult>, String> {
     let settings = Settings::load();
-    pipeline::process_batch(&app, paths, settings.dpi).map_err(|e| e.to_string())
+    pipeline::process_batch(&app, paths, settings.dpi, prompt).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -102,7 +102,7 @@ fn open_output_folder(path: String) -> Result<(), String> {
 #[tauri::command]
 fn check_model_exists() -> bool {
     let settings = Settings::load();
-    models::model_exists(&settings)
+    llm::runtime_has_llama_cli() && models::has_vision_model(&settings)
 }
 
 #[tauri::command]

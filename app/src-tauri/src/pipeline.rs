@@ -1,10 +1,14 @@
 use crate::errors::{PipelineError, Result};
-use crate::events::{AppEvent, CompletedEvent, ErrorEvent, JobStatus, ProgressEvent};
+use crate::events::{
+    AppEvent, CompletedEvent, ErrorEvent, JobStatus, PreviewEvent, ProgressEvent,
+};
 use crate::formatting::clean_markdown;
-use crate::ocr::OcrEngine;
+use crate::llm::LlmOcrEngine;
 use crate::pdf::render_pdf_to_images;
-use image::DynamicImage;
+use base64::Engine;
+use image::{DynamicImage, ImageFormat};
 use std::fs;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use tauri::Emitter;
 use uuid::Uuid;
@@ -19,10 +23,18 @@ pub struct JobResult {
 }
 
 const ALLOWED_EXT: &[&str] = &["png", "jpg", "jpeg", "pdf"];
+const DEFAULT_PROMPT: &str = "Extract all text from the image and return it as markdown.";
 
-pub fn process_batch(app: &tauri::AppHandle, paths: Vec<String>, dpi: u16) -> Result<Vec<JobResult>> {
+pub fn process_batch(app: &tauri::AppHandle, paths: Vec<String>, dpi: u16, prompt: Option<String>) -> Result<Vec<JobResult>> {
     let mut results = Vec::with_capacity(paths.len());
-    let ocr = OcrEngine::new("eng")?;
+    let settings = crate::settings::Settings::load();
+    let model_path = crate::models::resolve_active_vision_model_path(&settings)?;
+    let ocr = LlmOcrEngine::new(model_path, settings.threads)?;
+    let effective_prompt = prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_PROMPT);
 
     for raw in paths {
         let path = PathBuf::from(&raw);
@@ -42,7 +54,7 @@ pub fn process_batch(app: &tauri::AppHandle, paths: Vec<String>, dpi: u16) -> Re
         } else if !is_allowed(&path) {
             fail(job_id, raw, "unsupported file type".into(), app)
         } else {
-            match process_single(app, &job_id, &path, &ocr, dpi) {
+            match process_single(app, &job_id, &path, &ocr, dpi, effective_prompt) {
                 Ok(out) => {
                     emit_complete(app, &job_id, &out);
                     JobResult {
@@ -78,8 +90,9 @@ fn process_single(
     app: &tauri::AppHandle,
     job_id: &str,
     path: &Path,
-    ocr: &OcrEngine,
+    ocr: &LlmOcrEngine,
     dpi: u16,
+    prompt: &str,
 ) -> Result<PathBuf> {
     let mut images: Vec<PathBuf> = Vec::new();
     let mut _temp_holder: Option<tempfile::TempDir> = None;
@@ -118,11 +131,52 @@ fn process_single(
     );
 
     let mut page_texts = Vec::new();
+    let total_pages = images.len().max(1);
+
     for (idx, img_path) in images.iter().enumerate() {
-        let text = ocr.recognize(img_path)?;
-        page_texts.push(format!("## Page {}\n\n{}\n", idx + 1, text.trim()));
-        let prog = 0.25 + ((idx as f32 + 1.0) / images.len().max(1) as f32) * 0.5;
-        emit_progress(app, job_id, JobStatus::Ocr, prog, None, None);
+        let page_number = idx + 1;
+        let preview_image = encode_preview_image_data_url(img_path)?;
+
+        emit_progress(
+            app,
+            job_id,
+            JobStatus::Ocr,
+            0.25 + (idx as f32 / total_pages as f32) * 0.5,
+            Some(format!("Scanning page {page_number}/{total_pages}")),
+            Some(path.to_string_lossy().into()),
+        );
+        emit_preview(
+            app,
+            job_id,
+            path,
+            page_number,
+            total_pages,
+            &preview_image,
+            None,
+        );
+
+        let text = ocr.recognize(img_path, prompt)?;
+        let chunk = format!("## Page {}\n\n{}\n", page_number, text.trim());
+        page_texts.push(chunk.clone());
+        emit_preview(
+            app,
+            job_id,
+            path,
+            page_number,
+            total_pages,
+            &preview_image,
+            Some(chunk),
+        );
+
+        let prog = 0.25 + (page_number as f32 / total_pages as f32) * 0.5;
+        emit_progress(
+            app,
+            job_id,
+            JobStatus::Ocr,
+            prog,
+            Some(format!("Recognized page {page_number}/{total_pages}")),
+            Some(path.to_string_lossy().into()),
+        );
     }
 
     emit_progress(
@@ -134,7 +188,12 @@ fn process_single(
         Some(path.to_string_lossy().into()),
     );
 
-    let markdown = clean_markdown(&page_texts.join("\n"));
+    let body = clean_markdown(&page_texts.join("\n"));
+    let markdown = if prompt != DEFAULT_PROMPT {
+        format!("<!-- prompt: {} -->\n\n{}", prompt, body)
+    } else {
+        body
+    };
 
     emit_progress(
         app,
@@ -213,4 +272,38 @@ fn emit_error(app: &tauri::AppHandle, job_id: &str, message: &str) {
         message: message.into(),
     });
     let _ = app.emit("job-error", &payload);
+}
+
+fn emit_preview(
+    app: &tauri::AppHandle,
+    job_id: &str,
+    source: &Path,
+    page_number: usize,
+    total_pages: usize,
+    image_data_url: &str,
+    text_chunk: Option<String>,
+) {
+    let payload = AppEvent::Preview(PreviewEvent {
+        job_id: job_id.to_string(),
+        source: Some(source.to_string_lossy().into()),
+        page_number,
+        total_pages,
+        image_data_url: image_data_url.to_string(),
+        text_chunk,
+    });
+    let _ = app.emit("job-preview", &payload);
+}
+
+fn encode_preview_image_data_url(path: &Path) -> Result<String> {
+    let preview = image::open(path)
+        .map_err(|e| PipelineError::InvalidInput(e.to_string()))?
+        .thumbnail(1200, 1600);
+
+    let mut bytes = Cursor::new(Vec::new());
+    preview
+        .write_to(&mut bytes, ImageFormat::Png)
+        .map_err(|e| PipelineError::InvalidInput(e.to_string()))?;
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes.into_inner());
+    Ok(format!("data:image/png;base64,{encoded}"))
 }

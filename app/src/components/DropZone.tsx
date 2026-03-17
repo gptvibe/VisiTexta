@@ -29,8 +29,8 @@ export function DropZone({ disabled, onBrowse, onFiles }: DropZoneProps) {
       }}
     >
       <div className="dropzone-inner">
-        <div className="dropzone-title">Drop files here</div>
-        <div className="dropzone-subtitle">PNG, JPG, JPEG, PDF</div>
+        <div className="dropzone-title">Feed the vision pipeline</div>
+        <div className="dropzone-subtitle">Drop PNG, JPG, JPEG, or PDF to start a live OCR stream.</div>
         <div className="dropzone-actions">
           <button className="btn primary" onClick={onBrowse} disabled={disabled}>
             Browse files

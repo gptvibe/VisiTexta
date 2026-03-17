@@ -18,6 +18,21 @@ export type JobResult = {
   message?: string | null
 }
 
+export type JobPreviewPage = {
+  page_number: number
+  image_data_url: string
+  text_chunk?: string | null
+}
+
+export type JobStreamState = {
+  streamed_markdown: string
+  preview_image_data_url?: string | null
+  current_page?: number | null
+  total_pages?: number | null
+  source?: string | null
+  pages?: JobPreviewPage[]
+}
+
 export type AppEvent =
   | {
       type: 'Progress'
@@ -27,6 +42,17 @@ export type AppEvent =
         progress: number
         message?: string | null
         source?: string | null
+      }
+    }
+  | {
+      type: 'Preview'
+      data: {
+        job_id: string
+        source?: string | null
+        page_number: number
+        total_pages: number
+        image_data_url: string
+        text_chunk?: string | null
       }
     }
   | {

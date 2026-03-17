@@ -1,30 +1,32 @@
-# VisiTexta
+# VisiTexta App
 
-Offline OCR-to-Markdown desktop app (Tauri + React + Rust).
+Desktop app package for VisiTexta 0.2.0 (Tauri + React + Rust).
 
-## Quickstart (dev)
-1. Ensure the model file exists at `models/Qwen_Qwen3.5-0.8B-Q4_K_M.gguf` (already in this repo root).
-2. DLLs (pdfium + tesseract) are under `src-tauri/bin`; tessdata (eng, osd) under `src-tauri/resources/tessdata`.
-3. Run:
-   ```bash
-   npm install
-   npm run tauri:dev
-   ```
-   Drop a PDF or image; a `<basename>.md` file is written beside the source.
+## Runtime architecture (0.2.0)
+- Model-only OCR path via local llama runtime binaries.
+- Vision GGUF model required in `models/`.
+- For Qwen2.5-VL models, a matching `mmproj` file is required.
 
-## Build portable exe
+## Run in development
+```bash
+npm install
+npm run tauri:dev
+```
+
+## Build
 ```bash
 npm run build
 npm run tauri:build
 ```
-The bundle includes `bin/*` and `resources/tessdata`.
 
-## Features
-- Inputs: PNG, JPG, JPEG, PDF (PDF rendered via pdfium to images).
-- OCR: Tesseract (eng by default; add languages to `src-tauri/resources/tessdata` or `models/tessdata`).
-- Output: cleaned Markdown per page; copies available via UI buttons.
-- Offline: all processing local; model loaded from `./models`.
+## Required local files
+- `src-tauri/bin/`:
+  - `llama-mtmd-cli.exe` (or compatible runner)
+  - required llama/ggml DLLs
+- `models/` is created automatically when the user downloads a model from Settings.
 
-## Troubleshooting
-- If the UI shows "Model missing", place the model file in `models/`.
-- If OCR fails, confirm `pdfium.dll`, `libtesseract-5.dll`, `libleptonica-6.dll` are present in `src-tauri/bin`.
+## Notes
+- Inputs: PDF, PNG, JPG, JPEG.
+- Output: markdown file beside input source.
+- Processing is fully offline once runtime/model files are present.
+- For Qwen2-VL repo downloads, companion `mmproj` is downloaded automatically.

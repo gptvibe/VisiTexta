@@ -1,4 +1,4 @@
-import type { JobResult } from '../types'
+import type { JobResult, JobStreamState } from '../types'
 
 const statusTone: Record<string, string> = {
   Done: 'ok',
@@ -14,10 +14,11 @@ const statusTone: Record<string, string> = {
 type FileQueueProps = {
   jobs: JobResult[]
   selectedId?: string | null
+  streams?: Record<string, JobStreamState>
   onSelect: (jobId: string) => void
 }
 
-export function FileQueue({ jobs, selectedId, onSelect }: FileQueueProps) {
+export function FileQueue({ jobs, selectedId, streams, onSelect }: FileQueueProps) {
   return (
     <div className="queue">
       <div className="panel-title">File Queue</div>
@@ -28,7 +29,12 @@ export function FileQueue({ jobs, selectedId, onSelect }: FileQueueProps) {
         {jobs.map((job) => {
           const progress = Math.round((job.progress ?? 0) * 100)
           const isSelected = job.job_id === selectedId
-          const detail = job.error ?? job.message ?? ''
+          const stream = streams?.[job.job_id]
+          const pageLabel =
+            stream?.current_page && stream?.total_pages
+              ? `Page ${stream.current_page}/${stream.total_pages}`
+              : null
+          const detail = job.error ?? pageLabel ?? job.message ?? ''
 
           return (
             <button

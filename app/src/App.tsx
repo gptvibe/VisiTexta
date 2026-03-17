@@ -7,7 +7,14 @@ import { FileQueue } from './components/FileQueue'
 import { MarkdownPreview } from './components/MarkdownPreview'
 import { SettingsDrawer } from './components/SettingsDrawer'
 import { ToastNotifications, type Toast } from './components/ToastNotifications'
-import type { AppEvent, JobResult, ModelDownloadEvent } from './types'
+import type {
+  AppEvent,
+  JobPreviewPage,
+  JobResult,
+  JobStatus,
+  JobStreamState,
+  ModelDownloadEvent,
+} from './types'
 import './App.css'
 
 type Settings = {
@@ -42,11 +49,59 @@ const defaultDownloadState: ModelDownloadState = {
   progress: 0,
 }
 
-const DEFAULT_MODEL_REPO = 'unsloth/Qwen3.5-0.8B-GGUF'
+const DEFAULT_MODEL_REPO = 'unsloth/Qwen2.5-VL-3B-Instruct-GGUF'
+const DEFAULT_PROMPT = 'Extract all text from the image and return it as markdown.'
+
+function isActiveStatus(status: JobStatus) {
+  return !['Done', 'Failed', 'Canceled'].includes(status)
+}
+
+function mergeJobs(previous: JobResult[], incoming: JobResult[]) {
+  const next = [...previous]
+
+  for (const job of incoming) {
+    const index = next.findIndex((item) => item.job_id === job.job_id)
+    if (index === -1) {
+      next.unshift(job)
+      continue
+    }
+
+    next[index] = {
+      ...next[index],
+      ...job,
+      progress: job.progress ?? next[index].progress,
+      message: job.message ?? next[index].message,
+      error: job.error ?? next[index].error,
+    }
+  }
+
+  return next
+}
+
+function upsertPreviewPage(
+  pages: JobPreviewPage[] | undefined,
+  update: JobPreviewPage
+) {
+  const current = pages ?? []
+  const index = current.findIndex((page) => page.page_number === update.page_number)
+
+  if (index === -1) {
+    return [...current, update].sort((left, right) => left.page_number - right.page_number)
+  }
+
+  const next = [...current]
+  next[index] = {
+    ...next[index],
+    ...update,
+    text_chunk: update.text_chunk ?? next[index].text_chunk ?? null,
+  }
+  return next
+}
 
 function App() {
   const [busy, setBusy] = useState(false)
   const [jobs, setJobs] = useState<JobResult[]>([])
+  const [streams, setStreams] = useState<Record<string, JobStreamState>>({})
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [markdown, setMarkdown] = useState('')
   const [log, setLog] = useState('Drop files or select to start.')
@@ -57,12 +112,35 @@ function App() {
   const [models, setModels] = useState<string[]>([])
   const [modelInput, setModelInput] = useState(DEFAULT_MODEL_REPO)
   const [downloadState, setDownloadState] = useState<ModelDownloadState>(defaultDownloadState)
-  const [autoDownloadAttempted, setAutoDownloadAttempted] = useState(false)
+  const [prompt, setPrompt] = useState('')
 
   const selectedJob = useMemo(
     () => jobs.find((job) => job.job_id === selectedId) || null,
     [jobs, selectedId]
   )
+
+  const selectedStream = useMemo(
+    () => (selectedId ? streams[selectedId] || null : null),
+    [selectedId, streams]
+  )
+
+  const activeJobs = useMemo(
+    () => jobs.filter((job) => isActiveStatus(job.status)).length,
+    [jobs]
+  )
+
+  const completedJobs = useMemo(
+    () => jobs.filter((job) => job.status === 'Done').length,
+    [jobs]
+  )
+
+  const selectedRenderedMarkdown = useMemo(() => {
+    const streamText = selectedStream?.streamed_markdown?.trim() || ''
+    if (selectedJob?.status === 'Done') {
+      return markdown || streamText
+    }
+    return streamText || markdown
+  }, [markdown, selectedJob?.status, selectedStream?.streamed_markdown])
 
   useEffect(() => {
     const dropListener = listen<string[]>('tauri://file-drop', async (event) => {
@@ -79,6 +157,7 @@ function App() {
   useEffect(() => {
     const registrations: Promise<() => void>[] = [
       listen<AppEvent>('job-progress', (event) => handleAppEvent(event.payload)),
+      listen<AppEvent>('job-preview', (event) => handleAppEvent(event.payload)),
       listen<AppEvent>('job-complete', (event) => handleAppEvent(event.payload)),
       listen<AppEvent>('job-error', (event) => handleAppEvent(event.payload)),
       listen<ModelDownloadEvent>('model-download-progress', (event) => {
@@ -116,17 +195,6 @@ function App() {
   useEffect(() => {
     if (settingsOpen) loadModels()
   }, [settingsOpen])
-
-  useEffect(() => {
-    if (autoDownloadAttempted) return
-    if (downloadState.status !== 'idle') return
-    if (models.length === 0 && !settings.model_file) {
-      setAutoDownloadAttempted(true)
-      setModelInput(DEFAULT_MODEL_REPO)
-      enqueueToast(`Downloading ${DEFAULT_MODEL_REPO}...`, 'info')
-      onDownloadModel(DEFAULT_MODEL_REPO)
-    }
-  }, [models, autoDownloadAttempted, downloadState.status, settings.model_file])
 
   useEffect(() => {
     if (!selectedJob?.output_path) {
@@ -172,6 +240,7 @@ function App() {
 
   function handleAppEvent(event?: AppEvent | null) {
     if (!event) return
+
     if (event.type === 'Progress') {
       const { job_id, status, progress, message, source } = event.data
       upsertJob({
@@ -181,6 +250,38 @@ function App() {
         message: message ?? null,
         source: source ?? undefined,
       })
+      setSelectedId((current) => current ?? job_id)
+      if (message) {
+        setLog(`${status} • ${message}`)
+      }
+    } else if (event.type === 'Preview') {
+      const { job_id, image_data_url, page_number, total_pages, text_chunk, source } = event.data
+      setStreams((prev) => {
+        const current = prev[job_id] || { streamed_markdown: '' }
+        const nextStream = text_chunk
+          ? `${current.streamed_markdown}${current.streamed_markdown ? '\n' : ''}${text_chunk}`
+          : current.streamed_markdown
+        const nextPages = upsertPreviewPage(current.pages, {
+          page_number,
+          image_data_url,
+          text_chunk: text_chunk ?? null,
+        })
+
+        return {
+          ...prev,
+          [job_id]: {
+            ...current,
+            source: source ?? current.source ?? null,
+            current_page: page_number,
+            total_pages: total_pages,
+            preview_image_data_url: image_data_url,
+            streamed_markdown: nextStream,
+            pages: nextPages,
+          },
+        }
+      })
+      setSelectedId((current) => current ?? job_id)
+      setLog(`Scanning page ${page_number}/${total_pages}`)
     } else if (event.type === 'Completed') {
       const { job_id, output_path } = event.data
       upsertJob({
@@ -192,7 +293,7 @@ function App() {
       })
       setLog(`Finished ${output_path}`)
       enqueueToast('Markdown ready.', 'success')
-      if (!selectedId) setSelectedId(job_id)
+      setSelectedId((current) => current ?? job_id)
     } else if (event.type === 'Error') {
       const { job_id, message } = event.data
       upsertJob({
@@ -228,8 +329,8 @@ function App() {
   async function handlePaths(paths: string[]) {
     if (!paths.length) return
     if (modelMissing) {
-      setLog('No model found. Download one in Settings or place a .gguf in models/.')
-      enqueueToast('No model found. Download one in Settings.', 'error')
+      setLog('Model missing. Open Settings and download a vision model to continue.')
+      enqueueToast('Download a vision model in Settings.', 'error')
       return
     }
 
@@ -237,9 +338,11 @@ function App() {
     setLog(`Processing ${paths.length} file(s)...`)
 
     try {
-      const result = (await invoke('enqueue_jobs', { paths })) as JobResult[]
-      setJobs((prev) => [...result, ...prev])
-      if (result.length && !selectedId) setSelectedId(result[0].job_id)
+      const result = (await invoke('enqueue_jobs', { paths, prompt: prompt.trim() || null })) as JobResult[]
+      setJobs((prev) => mergeJobs(prev, result))
+      if (result.length) {
+        setSelectedId((current) => current ?? result[0].job_id)
+      }
     } catch (err) {
       console.error(err)
       setLog('Failed to enqueue jobs.')
@@ -324,6 +427,12 @@ function App() {
 
     try {
       const result = await invoke<{ file_name: string }>('download_model', { model: repo })
+      setDownloadState({
+        status: 'done',
+        progress: 1,
+        message: 'Download complete.',
+        file_name: result.file_name,
+      })
       enqueueToast(`Downloaded ${result.file_name}.`, 'success')
       setModelInput('')
       await loadModels()
@@ -342,11 +451,29 @@ function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div>
-          <div className="title">VisiTexta</div>
-          <div className="subtitle">Offline OCR to clean Markdown</div>
+        <div className="brand-block">
+          <div className="subtitle">Offline vision pipeline</div>
+          <div className="title-row">
+            <div className="title">VisiTexta</div>
+            <div className="mode-pill">Streaming OCR</div>
+          </div>
+          <div className="headline">
+            Live page-aware OCR with a running transcript and markdown render.
+          </div>
         </div>
         <div className="topbar-actions">
+          <div className="telemetry-card">
+            <span>Active jobs</span>
+            <strong>{activeJobs}</strong>
+          </div>
+          <div className="telemetry-card">
+            <span>Completed</span>
+            <strong>{completedJobs}</strong>
+          </div>
+          <div className="telemetry-card wide">
+            <span>Runtime</span>
+            <strong>{modelMissing ? 'Missing' : 'Ready'}</strong>
+          </div>
           <button className="btn ghost" onClick={() => setSettingsOpen(true)}>
             Settings
           </button>
@@ -355,8 +482,7 @@ function App() {
 
       {modelMissing && (
         <div className="warning">
-          No model found. Download a model in Settings or place a .gguf file in{' '}
-          <code>models/</code>.
+          No vision model detected. Open Settings and download one from Hugging Face.
         </div>
       )}
 
@@ -365,12 +491,47 @@ function App() {
           <FileQueue
             jobs={jobs}
             selectedId={selectedId}
+            streams={streams}
             onSelect={(id) => setSelectedId(id)}
           />
         </section>
 
-        <section className="panel drop-panel">
-          <div className="panel-title">Upload</div>
+        <section className="panel command-panel">
+          <div className="panel-title">Mission Control</div>
+          <div className="command-copy">
+            Route images or PDFs into the OCR pipeline and monitor the active page as it is being read.
+          </div>
+          <div className="prompt-block">
+            <label className="prompt-label">
+              Extraction Prompt
+              <span className="prompt-hint">optional — leave blank for default</span>
+            </label>
+            <textarea
+              className="prompt-input"
+              placeholder={DEFAULT_PROMPT}
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={3}
+            />
+          </div>
+          <div className="signal-grid">
+            <div className="signal-card">
+              <span>Selection</span>
+              <strong>{selectedJob?.source || 'No file selected'}</strong>
+            </div>
+            <div className="signal-card">
+              <span>Phase</span>
+              <strong>{selectedJob?.status || 'Idle'}</strong>
+            </div>
+            <div className="signal-card">
+              <span>Live page</span>
+              <strong>
+                {selectedStream?.current_page && selectedStream?.total_pages
+                  ? `${selectedStream.current_page}/${selectedStream.total_pages}`
+                  : 'Waiting'}
+              </strong>
+            </div>
+          </div>
           <DropZone
             disabled={busy || modelMissing}
             onBrowse={onBrowseFiles}
@@ -379,7 +540,11 @@ function App() {
         </section>
 
         <section className="panel preview-panel">
-          <MarkdownPreview job={selectedJob} markdown={markdown} />
+          <MarkdownPreview
+            job={selectedJob}
+            renderedMarkdown={selectedRenderedMarkdown}
+            stream={selectedStream}
+          />
         </section>
       </main>
 

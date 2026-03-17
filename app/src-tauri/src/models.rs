@@ -95,6 +95,120 @@ pub fn model_exists(settings: &Settings) -> bool {
     false
 }
 
+pub fn has_vision_model(settings: &Settings) -> bool {
+    resolve_active_vision_model_path(settings)
+        .map(|path| {
+            is_vision_model_name(path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+        })
+        .unwrap_or(false)
+}
+
+pub fn resolve_active_model_path(settings: &Settings) -> Result<PathBuf> {
+    if let Some(model_file) = settings
+        .model_file
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+    {
+        for dir in model_dir_candidates() {
+            let candidate = dir.join(&model_file);
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+        return Err(PipelineError::InvalidInput(format!(
+            "configured model not found: {}",
+            model_file
+        )));
+    }
+
+    let mut candidates = Vec::new();
+    for dir in model_dir_candidates() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("gguf"))
+                    .unwrap_or(false)
+                {
+                    candidates.push(path);
+                }
+            }
+        }
+    }
+
+    candidates.sort();
+    if let Some(path) = candidates
+        .iter()
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(is_vision_model_name)
+                .unwrap_or(false)
+        })
+        .cloned()
+    {
+        return Ok(path);
+    }
+
+    candidates.into_iter().next().ok_or_else(|| {
+        PipelineError::InvalidInput("no .gguf model found in models directory".into())
+    })
+}
+
+pub fn resolve_active_vision_model_path(settings: &Settings) -> Result<PathBuf> {
+    if let Some(model_file) = settings
+        .model_file
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+    {
+        for dir in model_dir_candidates() {
+            let candidate = dir.join(&model_file);
+            if candidate.exists() {
+                if candidate
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(is_vision_model_name)
+                    .unwrap_or(false)
+                {
+                    return Ok(candidate);
+                }
+                break;
+            }
+        }
+    }
+
+    let mut candidates = Vec::new();
+    for dir in model_dir_candidates() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("gguf"))
+                    .unwrap_or(false)
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(is_vision_model_name)
+                        .unwrap_or(false)
+                {
+                    candidates.push(path);
+                }
+            }
+        }
+    }
+
+    candidates.sort();
+    candidates.into_iter().next().ok_or_else(|| {
+        PipelineError::InvalidInput(
+            "no vision .gguf model found in models directory (expected filename containing Vision, -VL, or LLaVA)".into(),
+        )
+    })
+}
+
 
 pub async fn download_model(app: &tauri::AppHandle, input: &str) -> Result<DownloadResult> {
     let trimmed = input.trim();
@@ -145,82 +259,29 @@ pub async fn download_model(app: &tauri::AppHandle, input: &str) -> Result<Downl
         });
     }
 
-    let url = format!("{}/{}/resolve/main/{}", HF_RESOLVE_BASE, repo, file_name);
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| PipelineError::Other(e.into()))?;
+    download_file_with_progress(app, &client, &repo, &file_name, &target_path).await?;
 
-    if !response.status().is_success() {
-        emit_download(
-            app,
-            &repo,
-            &file_name,
-            0,
-            None,
-            0.0,
-            "error",
-            Some(format!("download failed: {}", response.status())),
-        );
-        return Err(PipelineError::InvalidInput(format!(
-            "download failed: {}",
-            response.status()
-        )));
-    }
-
-    let total = response.content_length();
-    let temp_path = target_path.with_extension("part");
-    let mut file = tokio::fs::File::create(&temp_path).await?;
-    let mut downloaded: u64 = 0;
-    let mut last_emit_bytes: u64 = 0;
-    let mut last_emit_progress: f32 = 0.0;
-    let mut stream = response;
-
-    while let Some(chunk) = stream
-        .chunk()
-        .await
-        .map_err(|e| PipelineError::Other(e.into()))?
-    {
-        file.write_all(&chunk).await?;
-        downloaded += chunk.len() as u64;
-        let progress = total
-            .map(|len| (downloaded as f64 / len.max(1) as f64) as f32)
-            .unwrap_or(0.0);
-
-        let should_emit = total
-            .map(|_| (progress - last_emit_progress) >= 0.02)
-            .unwrap_or(downloaded.saturating_sub(last_emit_bytes) >= 1_000_000);
-
-        if should_emit {
-            last_emit_bytes = downloaded;
-            last_emit_progress = progress;
-            emit_download(
-                app,
-                &repo,
-                &file_name,
-                downloaded,
-                total,
-                progress.min(1.0),
-                "downloading",
-                None,
-            );
+    // Qwen2-VL requires a companion mmproj file; fetch it automatically when absent.
+    let lowered_main = file_name.to_ascii_lowercase();
+    if lowered_main.contains("qwen") && lowered_main.contains("-vl") {
+        if let Some(mmproj_file) = select_mmproj_file(&client, &repo).await? {
+            let mmproj_target = models_dir.join(&mmproj_file);
+            if !mmproj_target.exists() {
+                emit_download(
+                    app,
+                    &repo,
+                    &mmproj_file,
+                    0,
+                    None,
+                    0.0,
+                    "starting",
+                    Some("downloading companion mmproj".into()),
+                );
+                download_file_with_progress(app, &client, &repo, &mmproj_file, &mmproj_target)
+                    .await?;
+            }
         }
     }
-
-    file.flush().await?;
-    tokio::fs::rename(&temp_path, &target_path).await?;
-
-    emit_download(
-        app,
-        &repo,
-        &file_name,
-        downloaded,
-        total,
-        1.0,
-        "done",
-        Some("download complete".into()),
-    );
 
     Ok(DownloadResult {
         repo,
@@ -428,6 +489,139 @@ async fn select_gguf_file(client: &reqwest::Client, repo: &str) -> Result<String
     Ok(ggufs[0].rfilename.clone())
 }
 
+async fn select_mmproj_file(client: &reqwest::Client, repo: &str) -> Result<Option<String>> {
+    let url = format!("{}/{}", HF_API_BASE, repo);
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| PipelineError::Other(e.into()))?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+
+    let info: HfModelInfo = response
+        .json()
+        .await
+        .map_err(|e| PipelineError::Other(e.into()))?;
+
+    let mut mmproj: Vec<HfSibling> = info
+        .siblings
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| {
+            let lowered = s.rfilename.to_ascii_lowercase();
+            lowered.ends_with(".gguf") && lowered.contains("mmproj")
+        })
+        .collect();
+
+    if mmproj.is_empty() {
+        return Ok(None);
+    }
+
+    mmproj.sort_by_key(|entry| {
+        let name = entry.rfilename.to_ascii_lowercase();
+        if name.contains("f16") {
+            0
+        } else if name.contains("bf16") {
+            1
+        } else if name.contains("f32") {
+            2
+        } else {
+            3
+        }
+    });
+
+    Ok(mmproj.first().map(|entry| entry.rfilename.clone()))
+}
+
+async fn download_file_with_progress(
+    app: &tauri::AppHandle,
+    client: &reqwest::Client,
+    repo: &str,
+    file_name: &str,
+    target_path: &Path,
+) -> Result<()> {
+    let url = format!("{}/{}/resolve/main/{}", HF_RESOLVE_BASE, repo, file_name);
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| PipelineError::Other(e.into()))?;
+
+    if !response.status().is_success() {
+        emit_download(
+            app,
+            repo,
+            file_name,
+            0,
+            None,
+            0.0,
+            "error",
+            Some(format!("download failed: {}", response.status())),
+        );
+        return Err(PipelineError::InvalidInput(format!(
+            "download failed: {}",
+            response.status()
+        )));
+    }
+
+    let total = response.content_length();
+    let temp_path = target_path.with_extension("part");
+    let mut file = tokio::fs::File::create(&temp_path).await?;
+    let mut downloaded: u64 = 0;
+    let mut last_emit_bytes: u64 = 0;
+    let mut last_emit_progress: f32 = 0.0;
+    let mut stream = response;
+
+    while let Some(chunk) = stream
+        .chunk()
+        .await
+        .map_err(|e| PipelineError::Other(e.into()))?
+    {
+        file.write_all(&chunk).await?;
+        downloaded += chunk.len() as u64;
+        let progress = total
+            .map(|len| (downloaded as f64 / len.max(1) as f64) as f32)
+            .unwrap_or(0.0);
+
+        let should_emit = total
+            .map(|_| (progress - last_emit_progress) >= 0.02)
+            .unwrap_or(downloaded.saturating_sub(last_emit_bytes) >= 1_000_000);
+
+        if should_emit {
+            last_emit_bytes = downloaded;
+            last_emit_progress = progress;
+            emit_download(
+                app,
+                repo,
+                file_name,
+                downloaded,
+                total,
+                progress.min(1.0),
+                "downloading",
+                None,
+            );
+        }
+    }
+
+    file.flush().await?;
+    tokio::fs::rename(&temp_path, target_path).await?;
+
+    emit_download(
+        app,
+        repo,
+        file_name,
+        downloaded,
+        total,
+        1.0,
+        "done",
+        Some("download complete".into()),
+    );
+
+    Ok(())
+}
+
 fn model_dir_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(cwd) = std::env::current_dir() {
@@ -442,6 +636,11 @@ fn model_dir_candidates() -> Vec<PathBuf> {
         }
     }
     candidates
+}
+
+fn is_vision_model_name(name: &str) -> bool {
+    let lowered = name.to_ascii_lowercase();
+    lowered.contains("vision") || lowered.contains("-vl") || lowered.contains("llava")
 }
 
 fn resolve_models_dir(create: bool) -> Result<PathBuf> {

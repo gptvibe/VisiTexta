@@ -149,7 +149,7 @@ export function SettingsDrawer({
                   setDraft({ ...draft, model_file: event.target.value || null })
                 }
               >
-                <option value="">Auto (download unsloth/Qwen3.5-0.8B-GGUF)</option>
+                <option value="">Auto (prefer a vision GGUF)</option>
                 {missingModel && (
                   <option value={missingModel}>{`Missing: ${missingModel}`}</option>
                 )}
@@ -165,7 +165,7 @@ export function SettingsDrawer({
               <div className="model-row">
                 <input
                   type="text"
-                  placeholder="unsloth/Qwen3.5-0.8B-GGUF"
+                  placeholder="unsloth/Qwen2.5-VL-3B-Instruct-GGUF"
                   value={modelInput}
                   onChange={(event) => onModelInputChange(event.target.value)}
                 />
@@ -178,7 +178,7 @@ export function SettingsDrawer({
                 </button>
               </div>
               <div className="field-note">
-                Accepted formats: owner/repo, owner/repo/file.gguf, or a Hugging Face URL.
+                Use a vision-capable GGUF model (name containing Vision, -VL, or LLaVA).
               </div>
               {downloadState.status !== 'idle' && (
                 <div className="model-progress">

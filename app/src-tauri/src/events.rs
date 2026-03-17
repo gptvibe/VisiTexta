@@ -21,7 +21,11 @@ pub struct ProgressEvent {
 #[derive(Debug, Serialize, Clone)]
 pub struct PreviewEvent {
     pub job_id: String,
-    pub markdown_chunk: String,
+    pub source: Option<String>,
+    pub page_number: usize,
+    pub total_pages: usize,
+    pub image_data_url: String,
+    pub text_chunk: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
