@@ -312,8 +312,9 @@ function App() {
     }
   }
 
-  async function onDownloadModel(repoOverride?: string) {
-    const repo = (repoOverride ?? modelInput).trim()
+  async function onDownloadModel(repoOverride?: string | null) {
+    const repoSource = typeof repoOverride === 'string' ? repoOverride : modelInput
+    const repo = repoSource.trim()
     if (!repo) {
       enqueueToast('Enter a Hugging Face model name.', 'info')
       return

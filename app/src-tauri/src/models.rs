@@ -32,7 +32,7 @@ struct HfModelInfo {
     siblings: Option<Vec<HfSibling>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct HfSibling {
     rfilename: String,
     size: Option<u64>,
@@ -260,9 +260,9 @@ fn emit_download(
 }
 
 fn parse_model_input(input: &str) -> Result<(String, Option<String>)> {
-    let trimmed = input.trim();
-    if trimmed.ends_with(".gguf") {
-        if let Some((repo, file)) = trimmed.rsplit_once('/') {
+    let normalized = normalize_model_locator(input)?;
+    if normalized.ends_with(".gguf") {
+        if let Some((repo, file)) = normalized.rsplit_once('/') {
             if repo.is_empty() || file.is_empty() {
                 return Err(PipelineError::InvalidInput("invalid model input".into()));
             }
@@ -272,7 +272,80 @@ fn parse_model_input(input: &str) -> Result<(String, Option<String>)> {
             "model input must include repo and file".into(),
         ));
     }
-    Ok((trimmed.to_string(), None))
+    Ok((normalized, None))
+}
+
+fn normalize_model_locator(input: &str) -> Result<String> {
+    let mut value = input
+        .trim()
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+
+    if value.is_empty() {
+        return Err(PipelineError::InvalidInput("model name is required".into()));
+    }
+
+    if let Some(rest) = value.strip_prefix("https://") {
+        value = rest.to_string();
+    } else if let Some(rest) = value.strip_prefix("http://") {
+        value = rest.to_string();
+    }
+
+    if let Some(path) = extract_hf_path(&value) {
+        value = path;
+    }
+
+    if let Some(path) = parse_repo_or_file_path(&value) {
+        return Ok(path);
+    }
+
+    Err(PipelineError::InvalidInput(
+        "model input must look like owner/repo or owner/repo/file.gguf".into(),
+    ))
+}
+
+fn extract_hf_path(value: &str) -> Option<String> {
+    let mut parts = value.splitn(2, '/');
+    let host = parts.next()?.to_ascii_lowercase();
+    let path = parts.next()?.trim_matches('/');
+
+    if host == "huggingface.co" || host == "www.huggingface.co" || host == "hf.co" {
+        return Some(path.to_string());
+    }
+    None
+}
+
+fn parse_repo_or_file_path(path: &str) -> Option<String> {
+    let mut normalized = path.trim_matches('/');
+    if let Some(rest) = normalized.strip_prefix("models/") {
+        normalized = rest;
+    }
+
+    let segments: Vec<&str> = normalized
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+
+    if segments.len() < 2 {
+        return None;
+    }
+
+    let repo = format!("{}/{}", segments[0], segments[1]);
+
+    if segments.len() >= 5 && (segments[2] == "blob" || segments[2] == "resolve") {
+        let file = segments.last()?.to_string();
+        return Some(format!("{repo}/{file}"));
+    }
+
+    if segments.len() == 3 && segments[2].to_ascii_lowercase().ends_with(".gguf") {
+        return Some(format!("{repo}/{}", segments[2]));
+    }
+
+    Some(repo)
 }
 
 fn sanitize_file_name(file_name: &str) -> Result<String> {
@@ -303,12 +376,25 @@ async fn select_gguf_file(client: &reqwest::Client, repo: &str) -> Result<String
         .json()
         .await
         .map_err(|e| PipelineError::Other(e.into()))?;
-    let mut ggufs: Vec<HfSibling> = info
+    let all_ggufs: Vec<HfSibling> = info
         .siblings
         .unwrap_or_default()
         .into_iter()
         .filter(|s| s.rfilename.to_lowercase().ends_with(".gguf"))
         .collect();
+
+    let mut ggufs: Vec<HfSibling> = all_ggufs
+        .iter()
+        .filter(|entry| {
+            let lowered = entry.rfilename.to_ascii_lowercase();
+            !lowered.starts_with("mmproj") && !lowered.contains("/mmproj")
+        })
+        .cloned()
+        .collect();
+
+    if ggufs.is_empty() {
+        ggufs = all_ggufs;
+    }
 
     if ggufs.is_empty() {
         return Err(PipelineError::InvalidInput(
@@ -317,17 +403,23 @@ async fn select_gguf_file(client: &reqwest::Client, repo: &str) -> Result<String
     }
 
     ggufs.sort_by_key(|entry| {
-        let name = entry.rfilename.as_str();
-        let score = if name.contains("Q4_K_M") {
+        let name = entry.rfilename.to_ascii_lowercase();
+        let score = if name.contains("q4_k_m") {
             0
-        } else if name.contains("Q4_K") {
+        } else if name.contains("q4_k") {
             1
-        } else if name.contains("Q5_K") {
+        } else if name.contains("q5_k") {
             2
-        } else if name.contains("Q6_K") {
+        } else if name.contains("q6_k") {
             3
-        } else {
+        } else if name.contains("q8_0") {
             4
+        } else if name.contains("f16") {
+            5
+        } else if name.starts_with("mmproj") || name.contains("/mmproj") {
+            10
+        } else {
+            6
         };
         let size = entry.size.unwrap_or(u64::MAX);
         (score, size)

@@ -171,11 +171,14 @@ export function SettingsDrawer({
                 />
                 <button
                   className="btn ghost"
-                  onClick={onDownloadModel}
+                  onClick={() => onDownloadModel()}
                   disabled={isDownloading || !modelInput.trim()}
                 >
                   {isDownloading ? 'Downloading...' : 'Download'}
                 </button>
+              </div>
+              <div className="field-note">
+                Accepted formats: owner/repo, owner/repo/file.gguf, or a Hugging Face URL.
               </div>
               {downloadState.status !== 'idle' && (
                 <div className="model-progress">
