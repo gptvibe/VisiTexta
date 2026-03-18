@@ -49,7 +49,7 @@ const defaultDownloadState: ModelDownloadState = {
   progress: 0,
 }
 
-const DEFAULT_MODEL_REPO = 'unsloth/Qwen2.5-VL-3B-Instruct-GGUF'
+const DEFAULT_MODEL_REPO = 'mradermacher/GLM-OCR-GGUF'
 const DEFAULT_PROMPT = 'Extract all text from the image and return it as markdown.'
 
 function isActiveStatus(status: JobStatus) {
@@ -113,6 +113,7 @@ function App() {
   const [modelInput, setModelInput] = useState(DEFAULT_MODEL_REPO)
   const [downloadState, setDownloadState] = useState<ModelDownloadState>(defaultDownloadState)
   const [prompt, setPrompt] = useState('')
+  const [autoDownloadAttempted, setAutoDownloadAttempted] = useState(false)
 
   const selectedJob = useMemo(
     () => jobs.find((job) => job.job_id === selectedId) || null,
@@ -197,6 +198,21 @@ function App() {
   }, [settingsOpen])
 
   useEffect(() => {
+    if (!modelMissing && autoDownloadAttempted) {
+      setAutoDownloadAttempted(false)
+    }
+  }, [autoDownloadAttempted, modelMissing])
+
+  useEffect(() => {
+    if (!modelMissing || autoDownloadAttempted) return
+
+    setAutoDownloadAttempted(true)
+    setLog('No local model found. Downloading the default model for first-time setup...')
+    enqueueToast('Downloading the default vision model for first-time setup.', 'info')
+    void onDownloadModel(DEFAULT_MODEL_REPO, true)
+  }, [autoDownloadAttempted, modelMissing])
+
+  useEffect(() => {
     if (!selectedJob?.output_path) {
       setMarkdown('')
       return
@@ -259,7 +275,7 @@ function App() {
       setStreams((prev) => {
         const current = prev[job_id] || { streamed_markdown: '' }
         const nextStream = text_chunk
-          ? `${current.streamed_markdown}${current.streamed_markdown ? '\n' : ''}${text_chunk}`
+          ? `${current.streamed_markdown}${text_chunk}`
           : current.streamed_markdown
         const nextPages = upsertPreviewPage(current.pages, {
           page_number,
@@ -329,8 +345,18 @@ function App() {
   async function handlePaths(paths: string[]) {
     if (!paths.length) return
     if (modelMissing) {
-      setLog('Model missing. Open Settings and download a vision model to continue.')
-      enqueueToast('Download a vision model in Settings.', 'error')
+      const downloading = ['starting', 'downloading'].includes(downloadState.status)
+      setLog(
+        downloading
+          ? 'Downloading the default vision model. Please wait...'
+          : 'Model missing. Open Settings to retry the model download.'
+      )
+      enqueueToast(
+        downloading
+          ? 'Model download is in progress.'
+          : 'Model download is required before OCR can start.',
+        'error'
+      )
       return
     }
 
@@ -345,8 +371,14 @@ function App() {
       }
     } catch (err) {
       console.error(err)
-      setLog('Failed to enqueue jobs.')
-      enqueueToast('Failed to enqueue jobs.', 'error')
+      const message =
+        typeof err === 'string'
+          ? err
+          : err instanceof Error
+            ? err.message
+            : String(err)
+      setLog(`Error: ${message}`)
+      enqueueToast(message || 'Failed to enqueue jobs.', 'error')
     } finally {
       setBusy(false)
     }
@@ -415,7 +447,7 @@ function App() {
     }
   }
 
-  async function onDownloadModel(repoOverride?: string | null) {
+  async function onDownloadModel(repoOverride?: string | null, isAuto = false) {
     const repoSource = typeof repoOverride === 'string' ? repoOverride : modelInput
     const repo = repoSource.trim()
     if (!repo) {
@@ -433,7 +465,13 @@ function App() {
         message: 'Download complete.',
         file_name: result.file_name,
       })
-      enqueueToast(`Downloaded ${result.file_name}.`, 'success')
+      enqueueToast(
+        isAuto ? `First-time setup complete: ${result.file_name} downloaded.` : `Downloaded ${result.file_name}.`,
+        'success'
+      )
+      if (isAuto) {
+        setLog('First-time setup complete. You can start OCR now.')
+      }
       setModelInput('')
       await loadModels()
       const next = { ...settings, model_file: result.file_name }
@@ -444,6 +482,9 @@ function App() {
       console.error(err)
       const message = err instanceof Error ? err.message : String(err)
       setDownloadState((prev) => ({ ...prev, status: 'error', message }))
+      if (isAuto) {
+        setLog('Automatic model download failed. Open Settings to retry.')
+      }
       enqueueToast(message || 'Download failed.', 'error')
     }
   }
@@ -482,7 +523,9 @@ function App() {
 
       {modelMissing && (
         <div className="warning">
-          No vision model detected. Open Settings and download one from Hugging Face.
+          {['starting', 'downloading'].includes(downloadState.status)
+            ? 'No local model detected. Downloading the default vision model now...'
+            : 'No vision model detected. Open Settings to retry the download.'}
         </div>
       )}
 

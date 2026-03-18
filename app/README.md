@@ -1,11 +1,14 @@
 # VisiTexta App
 
-Desktop app package for VisiTexta 0.2.0 (Tauri + React + Rust).
+Desktop app package for VisiTexta 1.0.0 (Tauri + React + Rust).
 
-## Runtime architecture (0.2.0)
+## Runtime architecture (1.0.0)
 - Model-only OCR path via local llama runtime binaries.
 - Vision GGUF model required in `models/`.
-- For Qwen2.5-VL models, a matching `mmproj` file is required.
+- For GLM-OCR, Qwen-VL, and LLaVA-family models, a matching `mmproj` file is required.
+- OCR work runs off the command handler path to keep UI responsiveness under load.
+- OCR text is streamed progressively into the preview while processing each page.
+- PDFs are rendered locally through PDFium before page-by-page OCR.
 
 ## Run in development
 ```bash
@@ -29,4 +32,4 @@ npm run tauri:build
 - Inputs: PDF, PNG, JPG, JPEG.
 - Output: markdown file beside input source.
 - Processing is fully offline once runtime/model files are present.
-- For Qwen2-VL repo downloads, companion `mmproj` is downloaded automatically.
+- For supported multimodal repo downloads, companion `mmproj` is downloaded automatically when needed.

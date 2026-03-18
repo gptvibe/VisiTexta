@@ -165,7 +165,7 @@ export function SettingsDrawer({
               <div className="model-row">
                 <input
                   type="text"
-                  placeholder="unsloth/Qwen2.5-VL-3B-Instruct-GGUF"
+                  placeholder="mradermacher/GLM-OCR-GGUF"
                   value={modelInput}
                   onChange={(event) => onModelInputChange(event.target.value)}
                 />
@@ -178,7 +178,7 @@ export function SettingsDrawer({
                 </button>
               </div>
               <div className="field-note">
-                Use a vision-capable GGUF model (name containing Vision, -VL, or LLaVA).
+                Supported models: GLM-OCR, Qwen-VL, and other vision GGUF files. Non-vision or auxiliary files are filtered out.
               </div>
               {downloadState.status !== 'idle' && (
                 <div className="model-progress">

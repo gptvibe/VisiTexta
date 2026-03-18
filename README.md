@@ -1,91 +1,94 @@
 # VisiTexta
 
-VisiTexta is a portable, offline desktop app that extracts text from images and PDFs into Markdown.
+VisiTexta is a Windows desktop app that extracts text from images and PDFs and saves the result as Markdown.
 
-Version 0.2.0 uses a local GGUF vision model runtime (llama.cpp binaries) and does not require cloud APIs.
+It runs locally on your PC. No cloud OCR API is required.
 
-## What is new in 0.2.0
-- Model-only OCR pipeline (no Tesseract in the processing path).
-- Bundled llama.cpp runtime binaries for local inference.
-- Model download flow in-app (Hugging Face) with automatic `mmproj` companion fetch for Qwen2-VL.
-- Prompt input support (optional) for extraction behavior.
-- Improved runtime checks and fallback to available vision models.
+## Who is this for?
 
-## Supported input
+- Students who want text from notes or scanned pages.
+- Office users who need text from screenshots or PDFs.
+- Anyone who wants simple OCR output in `.md` format.
+
+## What is new in 1.0.0
+
+- Works reliably for both images and PDFs.
+- Streams OCR text live in the app while processing.
+- Auto-downloads the default model on first run if no model is installed.
+- Uses a local runtime bundle in the release package.
+- Produces cleaner OCR-first Markdown output.
+
+## Supported files
+
 - PNG
 - JPG / JPEG
 - PDF
 
-## Output
-- Markdown (`.md`) written beside the source file.
-- Live stream + preview in UI during processing.
+## What you get
 
-## Portable quickstart (recommended)
-1. Download release `0.2.0` from GitHub releases.
-2. Unzip the package.
-3. Run `VisiTexta.exe`.
+- A Markdown file (`.md`) saved next to your original file.
+- Live preview in the app while OCR runs.
+
+## Quick start (for normal users)
+
+1. Download release `1.0.0`.
+2. Unzip it.
+3. Open `VisiTexta.exe`.
 4. Drop an image or PDF into the app.
 
-No additional installation should be required if the release package includes:
-- `bin/` (llama runtime binaries)
-- `resources/`
+### First run behavior (important)
 
-Models are intentionally not bundled in the portable package to reduce release size.
+- If no model is found, VisiTexta will start downloading the default model automatically.
+- This is normal and only happens on first setup (or if you removed models).
+- Keep the app open until the download completes.
 
-## Expected portable layout (model-free release)
+### Why first output can feel slow
+
+- The first word may take a while to appear.
+- On the first page, the model is loading and preparing context.
+- After that, output streams progressively.
+
+In short: initial delay is expected, then text should start flowing.
+
+## Portable package layout
+
 ```text
-VisiTexta 0.2.0/
+VisiTexta 1.0.0/
   VisiTexta.exe
   bin/
   resources/
+  models/
 ```
 
-## Model requirements
-VisiTexta expects a vision-capable GGUF model file name containing one of:
-- `Vision`
-- `-VL`
-- `LLaVA`
+## Model notes
 
-For Qwen2.5-VL, include both files in `models/`:
-- main model (example: `Qwen2.5-VL-3B-Instruct-Q3_K_S.gguf`)
-- projector model (example: `mmproj-F16.gguf`)
+- Supported vision models include GLM-OCR, Qwen-VL, and similar vision GGUF files.
+- Some models also need an `mmproj` file.
+- If required, VisiTexta downloads the companion `mmproj` automatically during model download.
 
-If you download from Settings using a Qwen2-VL repo, VisiTexta will fetch the companion `mmproj` automatically.
+## Troubleshooting
 
-## Development setup
+- Error about missing runtime CLI:
+  Make sure `bin/llama-mtmd-cli.exe` and `bin/llama-cli.exe` exist.
+- Error about missing model:
+  Open Settings and download a model (or let auto-download finish).
+- Error about missing `mmproj`:
+  Re-run model download from Settings so companion files are fetched.
+
+## For developers
+
 From repo root:
+
 ```bash
 cd app
 npm install
 npm run tauri:dev
 ```
 
-## Build release (Windows)
-From repo root:
+Build release:
+
 ```bash
 cd app
 npm run build
 npm run tauri:build
 ```
-
-Generated installers are under:
-- `app/src-tauri/target/release/bundle/nsis/`
-- `app/src-tauri/target/release/bundle/msi/`
-
-## Packaging notes for GitHub release
-When preparing a portable zip, copy:
-- `app/src-tauri/target/release/app.exe` as `VisiTexta.exe`
-- `app/src-tauri/bin/`
-- `app/src-tauri/resources/`
-
-## Troubleshooting
-- `Missing model runtime`: ensure `bin/llama-mtmd-cli.exe` (or compatible llama runner) exists in package `bin/`.
-- `no vision .gguf model found`: open Settings and download a vision model.
-- Qwen2-VL startup errors: ensure `mmproj-*.gguf` exists in `models/`.
-
-## Tech stack
-- Frontend: React + TypeScript
-- Desktop: Tauri
-- Backend: Rust
-- Model runtime: llama.cpp binaries
-- PDF rendering: pdfium-render

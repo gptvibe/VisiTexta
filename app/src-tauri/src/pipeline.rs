@@ -12,6 +12,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use tauri::Emitter;
 use uuid::Uuid;
+use regex::Regex;
 
 #[derive(Debug, serde::Serialize, Clone)]
 pub struct JobResult {
@@ -24,6 +25,7 @@ pub struct JobResult {
 
 const ALLOWED_EXT: &[&str] = &["png", "jpg", "jpeg", "pdf"];
 const DEFAULT_PROMPT: &str = "Extract all text from the image and return it as markdown.";
+const MAX_OCR_DIMENSION: u32 = 1600;
 
 pub fn process_batch(app: &tauri::AppHandle, paths: Vec<String>, dpi: u16, prompt: Option<String>) -> Result<Vec<JobResult>> {
     let mut results = Vec::with_capacity(paths.len());
@@ -95,7 +97,7 @@ fn process_single(
     prompt: &str,
 ) -> Result<PathBuf> {
     let mut images: Vec<PathBuf> = Vec::new();
-    let mut _temp_holder: Option<tempfile::TempDir> = None;
+    let mut _temp_holders: Vec<tempfile::TempDir> = Vec::new();
 
     if is_pdf(path) {
         emit_progress(
@@ -107,18 +109,22 @@ fn process_single(
             Some(path.to_string_lossy().into()),
         );
         let rendered = render_pdf_to_images(path, dpi)?;
-        images = rendered.images.clone();
-        _temp_holder = Some(rendered._tempdir);
+        let preprocess_dir = tempfile::tempdir()?;
+        for (idx, rendered_path) in rendered.images.iter().enumerate() {
+            let processed = preprocess_image_to_png(
+                rendered_path,
+                preprocess_dir.path(),
+                &format!("page-{}", idx + 1),
+            )?;
+            images.push(processed);
+        }
+        _temp_holders.push(rendered._tempdir);
+        _temp_holders.push(preprocess_dir);
     } else {
-        // preprocess standalone image into temp png (grayscale)
-        let img = image::open(path).map_err(|e| PipelineError::InvalidInput(e.to_string()))?;
-        let gray = DynamicImage::ImageLuma8(img.to_luma8());
         let tempdir = tempfile::tempdir()?;
-        let out = tempdir.path().join("image.png");
-        gray.save(&out)
-            .map_err(|e| PipelineError::InvalidInput(e.to_string()))?;
+        let out = preprocess_image_to_png(path, tempdir.path(), "image")?;
         images.push(out);
-        _temp_holder = Some(tempdir);
+        _temp_holders.push(tempdir);
     }
 
     emit_progress(
@@ -155,9 +161,7 @@ fn process_single(
             None,
         );
 
-        let text = ocr.recognize(img_path, prompt)?;
-        let chunk = format!("## Page {}\n\n{}\n", page_number, text.trim());
-        page_texts.push(chunk.clone());
+        let mut page_markdown = format!("## Page {}\n\n", page_number);
         emit_preview(
             app,
             job_id,
@@ -165,8 +169,32 @@ fn process_single(
             page_number,
             total_pages,
             &preview_image,
-            Some(chunk),
+            Some(page_markdown.clone()),
         );
+
+        emit_progress(
+            app,
+            job_id,
+            JobStatus::Ocr,
+            0.25 + ((idx as f32 + 0.1) / total_pages as f32) * 0.5,
+            Some("Running model (first token can take a few seconds)".into()),
+            Some(path.to_string_lossy().into()),
+        );
+
+        let streamed_text = ocr.recognize_streaming(img_path, prompt, |delta| {
+            emit_preview(
+                app,
+                job_id,
+                path,
+                page_number,
+                total_pages,
+                &preview_image,
+                Some(delta.to_string()),
+            );
+        })?;
+        page_markdown.push_str(streamed_text.trim());
+        page_markdown.push('\n');
+        page_texts.push(page_markdown);
 
         let prog = 0.25 + (page_number as f32 / total_pages as f32) * 0.5;
         emit_progress(
@@ -189,6 +217,13 @@ fn process_single(
     );
 
     let body = clean_markdown(&page_texts.join("\n"));
+    if !has_substantive_ocr_text(&body) {
+        return Err(PipelineError::Llm(
+            "OCR produced empty markdown. Verify the selected model supports vision OCR and try again."
+                .into(),
+        ));
+    }
+
     let markdown = if prompt != DEFAULT_PROMPT {
         format!("<!-- prompt: {} -->\n\n{}", prompt, body)
     } else {
@@ -238,6 +273,34 @@ fn is_pdf(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(|ext| ext.eq_ignore_ascii_case("pdf"))
         .unwrap_or(false)
+}
+
+fn has_substantive_ocr_text(markdown: &str) -> bool {
+    if markdown.trim().is_empty() {
+        return false;
+    }
+
+    // Ignore page headers that we inject ourselves; require at least some real
+    // payload text after stripping those scaffolding lines.
+    let page_heading = Regex::new(r"(?m)^##\s+Page\s+\d+\s*$").unwrap();
+    let stripped = page_heading.replace_all(markdown, "");
+    stripped.trim().chars().any(|c| c.is_alphanumeric())
+}
+
+fn preprocess_image_to_png(input: &Path, tempdir: &Path, stem: &str) -> Result<PathBuf> {
+    let img = image::open(input).map_err(|e| PipelineError::InvalidInput(e.to_string()))?;
+    let gray = DynamicImage::ImageLuma8(img.to_luma8());
+    let normalized = if gray.width() > MAX_OCR_DIMENSION || gray.height() > MAX_OCR_DIMENSION {
+        gray.thumbnail(MAX_OCR_DIMENSION, MAX_OCR_DIMENSION)
+    } else {
+        gray
+    };
+
+    let out = tempdir.join(format!("{stem}.png"));
+    normalized
+        .save(&out)
+        .map_err(|e| PipelineError::InvalidInput(e.to_string()))?;
+    Ok(out)
 }
 
 fn emit_progress(

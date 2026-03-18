@@ -1,13 +1,15 @@
 use crate::errors::{PipelineError, Result};
 use crate::settings::Settings;
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Emitter;
 use tokio::io::AsyncWriteExt;
 
-const DEFAULT_MODEL: &str = "Qwen_Qwen3.5-0.8B-Q4_K_M.gguf";
+const DEFAULT_MODEL: &str = "GLM-OCR-Q4_K_M.gguf";
 const HF_API_BASE: &str = "https://huggingface.co/api/models";
 const HF_RESOLVE_BASE: &str = "https://huggingface.co";
+const APP_DIR: &str = "VisiTexta";
 
 #[derive(Debug, Serialize, Clone)]
 pub struct ModelDownloadEvent {
@@ -53,6 +55,11 @@ pub fn list_models() -> Result<Vec<String>> {
                 .and_then(|ext| ext.to_str())
                 .map(|ext| ext.eq_ignore_ascii_case("gguf"))
                 .unwrap_or(false)
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(is_supported_vision_model_name)
+                    .unwrap_or(false)
             {
                 models.push(entry.file_name().to_string_lossy().into_owned());
             }
@@ -97,9 +104,7 @@ pub fn model_exists(settings: &Settings) -> bool {
 
 pub fn has_vision_model(settings: &Settings) -> bool {
     resolve_active_vision_model_path(settings)
-        .map(|path| {
-            is_vision_model_name(path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
-        })
+        .map(|path| is_model_runtime_ready(&path))
         .unwrap_or(false)
 }
 
@@ -169,7 +174,7 @@ pub fn resolve_active_vision_model_path(settings: &Settings) -> Result<PathBuf> 
                 if candidate
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .map(is_vision_model_name)
+                    .map(is_supported_vision_model_name)
                     .unwrap_or(false)
                 {
                     return Ok(candidate);
@@ -192,7 +197,7 @@ pub fn resolve_active_vision_model_path(settings: &Settings) -> Result<PathBuf> 
                     && path
                         .file_name()
                         .and_then(|name| name.to_str())
-                        .map(is_vision_model_name)
+                        .map(is_supported_vision_model_name)
                         .unwrap_or(false)
                 {
                     candidates.push(path);
@@ -241,7 +246,8 @@ pub async fn download_model(app: &tauri::AppHandle, input: &str) -> Result<Downl
     let file_name = sanitize_file_name(&file_name)?;
     let models_dir = resolve_models_dir(true)?;
     let target_path = models_dir.join(&file_name);
-    if target_path.exists() {
+    let model_already_exists = target_path.exists();
+    if model_already_exists {
         emit_download(
             app,
             &repo,
@@ -252,34 +258,38 @@ pub async fn download_model(app: &tauri::AppHandle, input: &str) -> Result<Downl
             "done",
             Some("model already exists".into()),
         );
-        return Ok(DownloadResult {
-            repo,
-            file_name,
-            file_path: target_path.to_string_lossy().into_owned(),
-        });
+    } else {
+        download_file_with_progress(app, &client, &repo, &file_name, &target_path).await?;
     }
 
-    download_file_with_progress(app, &client, &repo, &file_name, &target_path).await?;
-
-    // Qwen2-VL requires a companion mmproj file; fetch it automatically when absent.
+    // Some vision models (Qwen-VL / GLM-OCR / LLaVA) require a companion mmproj file.
     let lowered_main = file_name.to_ascii_lowercase();
-    if lowered_main.contains("qwen") && lowered_main.contains("-vl") {
-        if let Some(mmproj_file) = select_mmproj_file(&client, &repo).await? {
-            let mmproj_target = models_dir.join(&mmproj_file);
-            if !mmproj_target.exists() {
-                emit_download(
-                    app,
-                    &repo,
-                    &mmproj_file,
-                    0,
-                    None,
-                    0.0,
-                    "starting",
-                    Some("downloading companion mmproj".into()),
-                );
-                download_file_with_progress(app, &client, &repo, &mmproj_file, &mmproj_target)
-                    .await?;
-            }
+    let requires_mmproj = (lowered_main.contains("qwen") && lowered_main.contains("-vl"))
+        || lowered_main.contains("glm-ocr")
+        || lowered_main.contains("llava");
+
+    if requires_mmproj {
+        let mmproj_file = select_mmproj_file(&client, &repo).await?.ok_or_else(|| {
+            PipelineError::InvalidInput(
+                "this vision model requires a mmproj companion file, but none was found in the repo"
+                    .into(),
+            )
+        })?;
+
+        let mmproj_target = models_dir.join(&mmproj_file);
+        if !mmproj_target.exists() {
+            emit_download(
+                app,
+                &repo,
+                &mmproj_file,
+                0,
+                None,
+                0.0,
+                "starting",
+                Some("downloading companion mmproj".into()),
+            );
+            download_file_with_progress(app, &client, &repo, &mmproj_file, &mmproj_target)
+                .await?;
         }
     }
 
@@ -444,6 +454,41 @@ async fn select_gguf_file(client: &reqwest::Client, repo: &str) -> Result<String
         .filter(|s| s.rfilename.to_lowercase().ends_with(".gguf"))
         .collect();
 
+    let supported_vision: Vec<HfSibling> = all_ggufs
+        .iter()
+        .filter(|entry| is_supported_vision_model_name(&entry.rfilename))
+        .cloned()
+        .collect();
+
+    if !supported_vision.is_empty() {
+        let mut vision = supported_vision;
+        vision.sort_by_key(|entry| {
+            let name = entry.rfilename.to_ascii_lowercase();
+            let score = if name.contains("glm-ocr") && name.contains("q4_k_m") {
+                0
+            } else if name.contains("q3_k") {
+                2
+            } else if name.contains("q4_k_m") {
+                1
+            } else if name.contains("q4_k") {
+                3
+            } else if name.contains("q5_k") {
+                4
+            } else if name.contains("q6_k") {
+                5
+            } else if name.contains("q8_0") {
+                6
+            } else if name.contains("f16") {
+                7
+            } else {
+                8
+            };
+            let size = entry.size.unwrap_or(u64::MAX);
+            (score, size)
+        });
+        return Ok(vision[0].rfilename.clone());
+    }
+
     let mut ggufs: Vec<HfSibling> = all_ggufs
         .iter()
         .filter(|entry| {
@@ -459,7 +504,7 @@ async fn select_gguf_file(client: &reqwest::Client, repo: &str) -> Result<String
 
     if ggufs.is_empty() {
         return Err(PipelineError::InvalidInput(
-            "no .gguf files found in this repo".into(),
+            "no supported vision .gguf files found in this repo (expected Qwen-VL GGUF)".into(),
         ));
     }
 
@@ -624,9 +669,29 @@ async fn download_file_with_progress(
 
 fn model_dir_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
+    if let Some(app_data) = app_models_dir() {
+        candidates.push(app_data);
+    }
     if let Ok(cwd) = std::env::current_dir() {
         candidates.push(cwd.join("models"));
+        candidates.push(cwd.join("resources").join("models"));
     }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("models"));
+            candidates.push(dir.join("resources").join("models"));
+            if let Some(parent) = dir.parent() {
+                candidates.push(parent.join("models"));
+                candidates.push(parent.join("resources").join("models"));
+            }
+        }
+    }
+    candidates
+}
+
+fn model_dir_creation_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join("models"));
@@ -635,12 +700,119 @@ fn model_dir_candidates() -> Vec<PathBuf> {
             }
         }
     }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("models"));
+    }
+
+    if let Some(app_data) = app_models_dir() {
+        candidates.push(app_data);
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    candidates.retain(|dir| seen.insert(dir.clone()));
     candidates
+}
+
+fn app_models_dir() -> Option<PathBuf> {
+    let mut path = dirs::data_local_dir()?;
+    path.push(APP_DIR);
+    path.push("models");
+    Some(path)
+}
+
+pub fn ensure_models_dir() -> Result<PathBuf> {
+    resolve_models_dir(true)
 }
 
 fn is_vision_model_name(name: &str) -> bool {
     let lowered = name.to_ascii_lowercase();
     lowered.contains("vision") || lowered.contains("-vl") || lowered.contains("llava")
+}
+
+fn is_supported_vision_model_name(name: &str) -> bool {
+    let lowered = name.to_ascii_lowercase();
+    if lowered.contains("mmproj") {
+        return false;
+    }
+    lowered.ends_with(".gguf")
+        && (
+            (lowered.contains("qwen") && lowered.contains("-vl"))
+            || lowered.contains("glm-ocr")
+            || lowered.contains("vision")
+            || lowered.contains("llava")
+        )
+}
+
+fn model_requires_mmproj(model_name: &str) -> bool {
+    let lowered = model_name.to_ascii_lowercase();
+    (lowered.contains("qwen") && lowered.contains("-vl"))
+        || lowered.contains("glm-ocr")
+        || lowered.contains("llava")
+}
+
+fn is_model_runtime_ready(model_path: &Path) -> bool {
+    let model_name = model_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+
+    if !model_requires_mmproj(model_name) {
+        return true;
+    }
+
+    has_mmproj_for_model(model_path)
+}
+
+fn has_mmproj_for_model(model_path: &Path) -> bool {
+    let model_name = model_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    let mut search_dirs = Vec::new();
+    if let Some(parent) = model_path.parent() {
+        search_dirs.push(parent.to_path_buf());
+    }
+    search_dirs.extend(model_dir_candidates());
+
+    let mut seen = std::collections::HashSet::new();
+    search_dirs.retain(|d| seen.insert(d.clone()));
+
+    for dir in search_dirs {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name.to_ascii_lowercase(),
+                None => continue,
+            };
+
+            if !name.ends_with(".gguf") || !name.contains("mmproj") {
+                continue;
+            }
+
+            if model_name.contains("glm-ocr") && name.contains("glm-ocr") {
+                return true;
+            }
+            if model_name.contains("qwen") && model_name.contains("-vl") && name.contains("qwen") {
+                return true;
+            }
+            if model_name.contains("llava") && name.contains("llava") {
+                return true;
+            }
+
+            // Final fallback if family tag is ambiguous.
+            return true;
+        }
+    }
+
+    false
 }
 
 fn resolve_models_dir(create: bool) -> Result<PathBuf> {
@@ -650,12 +822,19 @@ fn resolve_models_dir(create: bool) -> Result<PathBuf> {
         }
     }
     if create {
-        let target = model_dir_candidates()
-            .first()
-            .cloned()
-            .unwrap_or_else(|| PathBuf::from("models"));
-        std::fs::create_dir_all(&target)?;
-        return Ok(target);
+        let mut last_error: Option<std::io::Error> = None;
+        for target in model_dir_creation_candidates() {
+            match fs::create_dir_all(&target) {
+                Ok(()) => return Ok(target),
+                Err(err) => last_error = Some(err),
+            }
+        }
+
+        return Err(PipelineError::InvalidInput(
+            last_error
+                .map(|err| format!("failed to create models directory: {err}"))
+                .unwrap_or_else(|| "failed to create models directory".into()),
+        ));
     }
     Err(PipelineError::InvalidInput(
         "models directory not found".into(),
