@@ -1,0 +1,51 @@
+%PDF-1.4
+1 0 obj`n<< /Type /Catalog /Pages 2 0 R >>`nendobj
+2 0 obj`n<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>`nendobj
+3 0 obj`n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>`nendobj
+4 0 obj`n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`nendobj
+5 0 obj
+<< /Length 154 >>
+stream
+BT
+/F1 24 Tf
+72 720 Td
+(Page One Summary) Tj
+0 -40 Td
+/F1 18 Tf
+(Latency target: under 2 seconds.) Tj
+0 -28 Td
+(Accuracy target: no dropped lines.) Tj
+ET
+endstream
+endobj
+6 0 obj`n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 7 0 R >>`nendobj
+7 0 obj
+<< /Length 136 >>
+stream
+BT
+/F1 24 Tf
+72 720 Td
+(Page Two Details) Tj
+0 -40 Td
+/F1 18 Tf
+(Keep OCR fully offline.) Tj
+0 -28 Td
+(Preserve markdown output.) Tj
+ET
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000060 00000 n 
+0000000125 00000 n 
+0000000253 00000 n 
+0000000325 00000 n 
+0000000529 00000 n 
+0000000657 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+843
+%%EOF

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "benchmark": "cargo run --manifest-path src-tauri/Cargo.toml --bin ocr_bench --",
     "lint": "eslint .",
     "preview": "vite preview",
     "tauri:dev": "tauri dev",

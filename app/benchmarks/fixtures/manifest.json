@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "suite_name": "VisiTexta OCR Regression Suite",
+  "description": "Starter fixtures for benchmarking preview latency, OCR latency, total runtime, memory, and normalized output stability.",
+  "fixtures": [
+    {
+      "id": "image-note",
+      "name": "Image Note",
+      "description": "Single PNG with short mixed text, numerals, and punctuation.",
+      "input": "inputs/sample-note.png",
+      "expected_output": "expected/sample-note.md",
+      "tags": ["image", "starter"]
+    },
+    {
+      "id": "pdf-two-page",
+      "name": "Two Page PDF",
+      "description": "Two-page PDF to exercise PDF rendering, page previews, and page-header normalization.",
+      "input": "inputs/sample-brief.pdf",
+      "expected_output": "expected/sample-brief.md",
+      "tags": ["pdf", "starter", "multi-page"]
+    }
+  ]
+}

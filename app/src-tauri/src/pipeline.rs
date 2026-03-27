@@ -5,6 +5,7 @@ use crate::events::{
 use crate::formatting::clean_markdown;
 use crate::llm::LlmOcrEngine;
 use crate::pdf::render_pdf_to_images;
+use crate::settings::Settings;
 use base64::Engine;
 use image::{DynamicImage, ImageFormat};
 use std::fs;
@@ -28,9 +29,20 @@ const DEFAULT_PROMPT: &str = "Extract all text from the image and return it as m
 const MAX_OCR_DIMENSION: u32 = 1600;
 
 pub fn process_batch(app: &tauri::AppHandle, paths: Vec<String>, dpi: u16, prompt: Option<String>) -> Result<Vec<JobResult>> {
+    let settings = Settings::load();
+    let mut observer = TauriObserver { app };
+    process_batch_with_observer(paths, &settings, dpi, prompt, &mut observer)
+}
+
+pub(crate) fn process_batch_with_observer(
+    paths: Vec<String>,
+    settings: &Settings,
+    dpi: u16,
+    prompt: Option<String>,
+    observer: &mut dyn PipelineObserver,
+) -> Result<Vec<JobResult>> {
     let mut results = Vec::with_capacity(paths.len());
-    let settings = crate::settings::Settings::load();
-    let model_path = crate::models::resolve_active_vision_model_path(&settings)?;
+    let model_path = crate::models::resolve_active_vision_model_path(settings)?;
     let ocr = LlmOcrEngine::new(model_path, settings.threads)?;
     let effective_prompt = prompt
         .as_deref()
@@ -43,7 +55,7 @@ pub fn process_batch(app: &tauri::AppHandle, paths: Vec<String>, dpi: u16, promp
         let job_id = Uuid::new_v4().to_string();
 
         emit_progress(
-            app,
+            observer,
             &job_id,
             JobStatus::Queued,
             0.0,
@@ -52,13 +64,13 @@ pub fn process_batch(app: &tauri::AppHandle, paths: Vec<String>, dpi: u16, promp
         );
 
         let res = if !path.exists() {
-            fail(job_id, raw, "file does not exist".into(), app)
+            fail(job_id, raw, "file does not exist".into(), observer)
         } else if !is_allowed(&path) {
-            fail(job_id, raw, "unsupported file type".into(), app)
+            fail(job_id, raw, "unsupported file type".into(), observer)
         } else {
-            match process_single(app, &job_id, &path, &ocr, dpi, effective_prompt) {
+            match process_single(observer, &job_id, &path, &ocr, dpi, effective_prompt) {
                 Ok(out) => {
-                    emit_complete(app, &job_id, &out);
+                    emit_complete(observer, &job_id, &out);
                     JobResult {
                         job_id,
                         source: raw,
@@ -67,7 +79,7 @@ pub fn process_batch(app: &tauri::AppHandle, paths: Vec<String>, dpi: u16, promp
                         error: None,
                     }
                 }
-                Err(err) => fail(job_id, raw, err.to_string(), app),
+                Err(err) => fail(job_id, raw, err.to_string(), observer),
             }
         };
 
@@ -77,8 +89,41 @@ pub fn process_batch(app: &tauri::AppHandle, paths: Vec<String>, dpi: u16, promp
     Ok(results)
 }
 
-fn fail(job_id: String, source: String, msg: String, app: &tauri::AppHandle) -> JobResult {
-    emit_error(app, &job_id, &msg);
+pub(crate) trait PipelineObserver {
+    fn on_progress(&mut self, event: ProgressEvent);
+    fn on_preview(&mut self, event: PreviewEvent);
+    fn on_completed(&mut self, event: CompletedEvent);
+    fn on_error(&mut self, event: ErrorEvent);
+}
+
+struct TauriObserver<'a> {
+    app: &'a tauri::AppHandle,
+}
+
+impl PipelineObserver for TauriObserver<'_> {
+    fn on_progress(&mut self, event: ProgressEvent) {
+        let payload = AppEvent::Progress(event);
+        let _ = self.app.emit("job-progress", &payload);
+    }
+
+    fn on_preview(&mut self, event: PreviewEvent) {
+        let payload = AppEvent::Preview(event);
+        let _ = self.app.emit("job-preview", &payload);
+    }
+
+    fn on_completed(&mut self, event: CompletedEvent) {
+        let payload = AppEvent::Completed(event);
+        let _ = self.app.emit("job-complete", &payload);
+    }
+
+    fn on_error(&mut self, event: ErrorEvent) {
+        let payload = AppEvent::Error(event);
+        let _ = self.app.emit("job-error", &payload);
+    }
+}
+
+fn fail(job_id: String, source: String, msg: String, observer: &mut dyn PipelineObserver) -> JobResult {
+    emit_error(observer, &job_id, &msg);
     JobResult {
         job_id,
         source,
@@ -89,7 +134,7 @@ fn fail(job_id: String, source: String, msg: String, app: &tauri::AppHandle) -> 
 }
 
 fn process_single(
-    app: &tauri::AppHandle,
+    observer: &mut dyn PipelineObserver,
     job_id: &str,
     path: &Path,
     ocr: &LlmOcrEngine,
@@ -101,7 +146,7 @@ fn process_single(
 
     if is_pdf(path) {
         emit_progress(
-            app,
+            observer,
             job_id,
             JobStatus::Rendering,
             0.05,
@@ -128,7 +173,7 @@ fn process_single(
     }
 
     emit_progress(
-        app,
+        observer,
         job_id,
         JobStatus::Ocr,
         0.25,
@@ -144,7 +189,7 @@ fn process_single(
         let preview_image = encode_preview_image_data_url(img_path)?;
 
         emit_progress(
-            app,
+            observer,
             job_id,
             JobStatus::Ocr,
             0.25 + (idx as f32 / total_pages as f32) * 0.5,
@@ -152,7 +197,7 @@ fn process_single(
             Some(path.to_string_lossy().into()),
         );
         emit_preview(
-            app,
+            observer,
             job_id,
             path,
             page_number,
@@ -163,7 +208,7 @@ fn process_single(
 
         let mut page_markdown = format!("## Page {}\n\n", page_number);
         emit_preview(
-            app,
+            observer,
             job_id,
             path,
             page_number,
@@ -173,7 +218,7 @@ fn process_single(
         );
 
         emit_progress(
-            app,
+            observer,
             job_id,
             JobStatus::Ocr,
             0.25 + ((idx as f32 + 0.1) / total_pages as f32) * 0.5,
@@ -183,7 +228,7 @@ fn process_single(
 
         let streamed_text = ocr.recognize_streaming(img_path, prompt, |delta| {
             emit_preview(
-                app,
+                observer,
                 job_id,
                 path,
                 page_number,
@@ -198,7 +243,7 @@ fn process_single(
 
         let prog = 0.25 + (page_number as f32 / total_pages as f32) * 0.5;
         emit_progress(
-            app,
+            observer,
             job_id,
             JobStatus::Ocr,
             prog,
@@ -208,7 +253,7 @@ fn process_single(
     }
 
     emit_progress(
-        app,
+        observer,
         job_id,
         JobStatus::Formatting,
         0.8,
@@ -231,7 +276,7 @@ fn process_single(
     };
 
     emit_progress(
-        app,
+        observer,
         job_id,
         JobStatus::Writing,
         0.9,
@@ -251,7 +296,7 @@ fn process_single(
     fs::write(&out, markdown)?;
 
     emit_progress(
-        app,
+        observer,
         job_id,
         JobStatus::Done,
         1.0,
@@ -304,41 +349,38 @@ fn preprocess_image_to_png(input: &Path, tempdir: &Path, stem: &str) -> Result<P
 }
 
 fn emit_progress(
-    app: &tauri::AppHandle,
+    observer: &mut dyn PipelineObserver,
     job_id: &str,
     status: JobStatus,
     progress: f32,
     message: Option<String>,
     source: Option<String>,
 ) {
-    let payload = AppEvent::Progress(ProgressEvent {
+    observer.on_progress(ProgressEvent {
         job_id: job_id.to_string(),
         status,
         progress,
         message,
         source,
     });
-    let _ = app.emit("job-progress", &payload);
 }
 
-fn emit_complete(app: &tauri::AppHandle, job_id: &str, path: &Path) {
-    let payload = AppEvent::Completed(CompletedEvent {
+fn emit_complete(observer: &mut dyn PipelineObserver, job_id: &str, path: &Path) {
+    observer.on_completed(CompletedEvent {
         job_id: job_id.to_string(),
         output_path: path.to_string_lossy().into(),
     });
-    let _ = app.emit("job-complete", &payload);
 }
 
-fn emit_error(app: &tauri::AppHandle, job_id: &str, message: &str) {
-    let payload = AppEvent::Error(ErrorEvent {
+fn emit_error(observer: &mut dyn PipelineObserver, job_id: &str, message: &str) {
+    observer.on_error(ErrorEvent {
         job_id: job_id.to_string(),
         message: message.into(),
     });
-    let _ = app.emit("job-error", &payload);
 }
 
 fn emit_preview(
-    app: &tauri::AppHandle,
+    observer: &mut dyn PipelineObserver,
     job_id: &str,
     source: &Path,
     page_number: usize,
@@ -346,7 +388,7 @@ fn emit_preview(
     image_data_url: &str,
     text_chunk: Option<String>,
 ) {
-    let payload = AppEvent::Preview(PreviewEvent {
+    observer.on_preview(PreviewEvent {
         job_id: job_id.to_string(),
         source: Some(source.to_string_lossy().into()),
         page_number,
@@ -354,7 +396,6 @@ fn emit_preview(
         image_data_url: image_data_url.to_string(),
         text_chunk,
     });
-    let _ = app.emit("job-preview", &payload);
 }
 
 fn encode_preview_image_data_url(path: &Path) -> Result<String> {
