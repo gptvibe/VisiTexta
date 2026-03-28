@@ -38,8 +38,9 @@ It runs locally on your PC. No cloud OCR API is required.
 
 ### First run behavior (important)
 
-- If no model is found, VisiTexta will start downloading the default model automatically.
-- This is normal and only happens on first setup (or if you removed models).
+- If no supported OCR model is found, VisiTexta will start downloading the recommended default profile automatically.
+- The default profile is GLM-OCR using `GLM-OCR.Q4_K_M.gguf`.
+- This is normal and only happens on first setup (or if you removed supported models).
 - Keep the app open until the download completes.
 
 ### Why first output can feel slow
@@ -62,16 +63,19 @@ VisiTexta 1.0.0/
 
 ## Model notes
 
-- Supported vision models include GLM-OCR, Qwen-VL, and similar vision GGUF files.
-- Some models also need an `mmproj` file.
-- If required, VisiTexta downloads the companion `mmproj` automatically during model download.
+- VisiTexta now uses an explicit curated model registry instead of treating arbitrary GGUF filenames as fully supported.
+- GLM-OCR is the recommended default profile.
+- Additional curated profiles include Qwen2-VL OCR 2B and Qwen2.5-VL 3B.
+- Some curated models also need an `mmproj` file. If required, VisiTexta validates the download and fetches the companion `mmproj` automatically.
+- Advanced settings still include an experimental custom download field for power users, but unlisted GGUF models are treated as best-effort only.
+- For experimental custom downloads, enter a full `owner/repo/file.gguf` path. Repo-only auto-selection is reserved for the curated supported profiles.
 
 ## Troubleshooting
 
 - Error about missing runtime CLI:
   Make sure `bin/llama-mtmd-cli.exe` and `bin/llama-cli.exe` exist.
 - Error about missing model:
-  Open Settings and download a model (or let auto-download finish).
+  Open Settings and download one of the curated profiles (or let the GLM-OCR auto-download finish).
 - Error about missing `mmproj`:
   Re-run model download from Settings so companion files are fetched.
 

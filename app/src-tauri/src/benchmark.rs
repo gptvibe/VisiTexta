@@ -1,4 +1,6 @@
-use crate::events::{CompletedEvent, ErrorEvent, PreviewEvent, ProgressEvent};
+use crate::events::{
+    CompletedEvent, ErrorEvent, PreviewEvent, ProgressEvent, RunnerEvent, RunnerStage,
+};
 use crate::llm;
 use crate::models;
 use crate::pipeline::{self, PipelineObserver};
@@ -273,7 +275,9 @@ where
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--manifest" => {
-                let value = iter.next().ok_or_else(|| anyhow!("--manifest requires a path"))?;
+                let value = iter
+                    .next()
+                    .ok_or_else(|| anyhow!("--manifest requires a path"))?;
                 cli.manifest_path = Some(PathBuf::from(value));
             }
             "--output-dir" => {
@@ -283,7 +287,9 @@ where
                 cli.output_dir = Some(PathBuf::from(value));
             }
             "--filter" => {
-                let value = iter.next().ok_or_else(|| anyhow!("--filter requires a value"))?;
+                let value = iter
+                    .next()
+                    .ok_or_else(|| anyhow!("--filter requires a value"))?;
                 cli.filter = Some(value);
             }
             "--bless" => cli.bless = true,
@@ -334,13 +340,19 @@ fn load_manifest(path: &Path) -> Result<FixtureManifest> {
     }
 
     if manifest.fixtures.is_empty() {
-        bail!("fixture manifest {} does not define any fixtures", path.display());
+        bail!(
+            "fixture manifest {} does not define any fixtures",
+            path.display()
+        );
     }
 
     Ok(manifest)
 }
 
-fn filter_fixtures(fixtures: Vec<FixtureDefinition>, filter: Option<&str>) -> Vec<FixtureDefinition> {
+fn filter_fixtures(
+    fixtures: Vec<FixtureDefinition>,
+    filter: Option<&str>,
+) -> Vec<FixtureDefinition> {
     let Some(filter) = filter.map(|value| value.to_ascii_lowercase()) else {
         return fixtures;
     };
@@ -416,10 +428,7 @@ fn run_case(
         )?;
 
     let source_kind = fixture_kind(&input_path);
-    let case_name = fixture
-        .name
-        .clone()
-        .unwrap_or_else(|| fixture.id.clone());
+    let case_name = fixture.name.clone().unwrap_or_else(|| fixture.id.clone());
 
     Ok(CaseReport {
         id: fixture.id.clone(),
@@ -494,9 +503,7 @@ fn build_case_artifacts(
                     total_time_ms,
                     peak_memory_bytes,
                     normalized_output_diff: None,
-                    actual_token_count: actual_markdown
-                        .as_deref()
-                        .map(normalized_token_count),
+                    actual_token_count: actual_markdown.as_deref().map(normalized_token_count),
                     expected_token_count: None,
                 },
                 status: match result.status {
@@ -587,7 +594,9 @@ fn build_summary(cases: &[CaseReport]) -> ReportSummary {
     let failure_count = cases.len().saturating_sub(success_count);
     let missing_expected_count = cases
         .iter()
-        .filter(|case| case.comparison_basis == "missing_expected" || case.comparison_basis == "none")
+        .filter(|case| {
+            case.comparison_basis == "missing_expected" || case.comparison_basis == "none"
+        })
         .count();
 
     ReportSummary {
@@ -672,9 +681,7 @@ fn format_optional_diff(value: Option<f64>) -> String {
 }
 
 fn format_optional_bytes(value: Option<u64>) -> String {
-    value
-        .map(format_bytes)
-        .unwrap_or_else(|| "n/a".into())
+    value.map(format_bytes).unwrap_or_else(|| "n/a".into())
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -689,7 +696,7 @@ fn format_bytes(bytes: u64) -> String {
 }
 
 fn ensure_runtime_ready(settings: &Settings) -> Result<()> {
-    if !llm::runtime_has_llama_cli() {
+    if !llm::runtime_has_ocr_runner() {
         bail!("benchmark runtime not ready: no llama OCR runner was found in src-tauri/bin or runtime resources");
     }
 
@@ -767,13 +774,25 @@ impl PipelineObserver for BenchmarkObserver {
         if self.first_preview_ms.is_none() {
             self.first_preview_ms = self.elapsed_ms();
         }
+    }
 
-        if self.first_text_ms.is_none() {
-            if let Some(text_chunk) = event.text_chunk {
-                if has_substantive_text(&text_chunk) {
-                    self.first_text_ms = self.elapsed_ms();
+    fn on_runner(&mut self, event: RunnerEvent) {
+        if self.first_text_ms.is_some() {
+            return;
+        }
+
+        match event.stage {
+            RunnerStage::FirstToken => {
+                self.first_text_ms = self.elapsed_ms();
+            }
+            RunnerStage::Chunk => {
+                if let Some(chunk) = event.chunk {
+                    if has_substantive_text(&chunk) {
+                        self.first_text_ms = self.elapsed_ms();
+                    }
                 }
             }
+            _ => {}
         }
     }
 
@@ -794,8 +813,8 @@ fn normalize_for_diff(input: &str) -> Vec<String> {
     let normalized_newlines = input.replace("\r\n", "\n").replace('\r', "\n");
     let without_markdown_page_headers =
         markdown_page_header_regex().replace_all(&normalized_newlines, " ");
-    let without_isolated_page_headers = isolated_page_header_regex()
-        .replace_all(&without_markdown_page_headers, "\n\n");
+    let without_isolated_page_headers =
+        isolated_page_header_regex().replace_all(&without_markdown_page_headers, "\n\n");
     whitespace_regex()
         .replace_all(&without_isolated_page_headers, " ")
         .trim()
@@ -851,10 +870,8 @@ fn whitespace_regex() -> &'static Regex {
 fn isolated_page_header_regex() -> &'static Regex {
     static REGEX: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     REGEX.get_or_init(|| {
-        Regex::new(
-            r"(?im)(?:^|\n\s*\n)\s*page\s+\d+(?:\s*(?:/|of)\s*\d+)?\s*:?\s*(?=\n\s*\n|$)",
-        )
-        .expect("isolated page header regex")
+        Regex::new(r"(?im)(?:^|\n\s*\n)\s*page\s+\d+(?:\s*(?:/|of)\s*\d+)?\s*:?\s*(?=\n\s*\n|$)")
+            .expect("isolated page header regex")
     })
 }
 
@@ -884,7 +901,11 @@ impl MemorySampler {
                 thread::sleep(Duration::from_millis(MEMORY_SAMPLE_INTERVAL_MS));
             }
 
-            if peak == 0 { None } else { Some(peak) }
+            if peak == 0 {
+                None
+            } else {
+                Some(peak)
+            }
         });
 
         Self { stop, handle }

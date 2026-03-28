@@ -5,6 +5,7 @@ use serde::Serialize;
 pub enum AppEvent {
     Progress(ProgressEvent),
     Preview(PreviewEvent),
+    Runner(RunnerEvent),
     Completed(CompletedEvent),
     Error(ErrorEvent),
 }
@@ -16,16 +17,55 @@ pub struct ProgressEvent {
     pub progress: f32,
     pub message: Option<String>,
     pub source: Option<String>,
+    pub page_number: Option<usize>,
+    pub total_pages: Option<usize>,
+    pub rendered_pages: Option<usize>,
+    pub recognized_pages: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Clone)]
 pub struct PreviewEvent {
     pub job_id: String,
     pub source: Option<String>,
+    pub kind: PreviewKind,
     pub page_number: usize,
     pub total_pages: usize,
     pub image_data_url: String,
     pub text_chunk: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct RunnerEvent {
+    pub job_id: String,
+    pub source: Option<String>,
+    pub page_number: Option<usize>,
+    pub total_pages: Option<usize>,
+    pub mode: RunnerMode,
+    pub stage: RunnerStage,
+    pub message: Option<String>,
+    pub chunk: Option<String>,
+    pub will_fallback: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Clone, Copy)]
+pub enum RunnerMode {
+    Persistent,
+    Transient,
+}
+
+#[derive(Debug, Serialize, Clone, Copy)]
+pub enum RunnerStage {
+    WorkerStarting,
+    ModelReady,
+    FirstToken,
+    Chunk,
+    Error,
+}
+
+#[derive(Debug, Serialize, Clone, Copy)]
+pub enum PreviewKind {
+    Rendered,
+    Ocr,
 }
 
 #[derive(Debug, Serialize, Clone)]

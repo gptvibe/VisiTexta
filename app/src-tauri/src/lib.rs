@@ -1,19 +1,30 @@
-mod errors;
-mod events;
-mod pipeline;
-mod settings;
-mod pdf;
-mod llm;
-mod formatting;
-mod models;
-mod runtime;
 #[cfg(debug_assertions)]
 pub mod benchmark;
+mod errors;
+mod events;
+mod formatting;
+mod llm;
+mod models;
+mod pdf;
+mod pipeline;
+mod runtime;
+mod settings;
 
+use base64::Engine;
 use pipeline::JobResult;
 use settings::Settings;
 use tauri::Wry;
 use tauri_plugin_clipboard_manager::Clipboard;
+use uuid::Uuid;
+
+#[derive(serde::Serialize)]
+struct OnboardingInfo {
+    model_storage_path: String,
+    recommended_model_profile_id: String,
+    recommended_model_label: String,
+    recommended_model_file: String,
+    recommended_model_repo: String,
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -37,11 +48,16 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             enqueue_jobs,
+            enqueue_pasted_image,
+            cancel_job,
             get_settings,
+            get_onboarding_info,
             set_settings,
             copy_file_to_clipboard,
             open_output_folder,
+            reveal_in_explorer,
             check_model_exists,
+            get_model_catalog,
             list_models,
             download_model,
             read_markdown_file,
@@ -56,9 +72,31 @@ async fn enqueue_jobs(
     app: tauri::AppHandle,
     paths: Vec<String>,
     prompt: Option<String>,
+    dpi: Option<u16>,
+) -> Result<Vec<JobResult>, String> {
+    enqueue_paths(app, paths, prompt, dpi).await
+}
+
+#[tauri::command]
+async fn enqueue_pasted_image(
+    app: tauri::AppHandle,
+    image_base64: String,
+    mime_type: String,
+    prompt: Option<String>,
+    dpi: Option<u16>,
+) -> Result<Vec<JobResult>, String> {
+    let path = write_pasted_image(&image_base64, &mime_type)?;
+    enqueue_paths(app, vec![path], prompt, dpi).await
+}
+
+async fn enqueue_paths(
+    app: tauri::AppHandle,
+    paths: Vec<String>,
+    prompt: Option<String>,
+    dpi: Option<u16>,
 ) -> Result<Vec<JobResult>, String> {
     let settings = Settings::load();
-    let dpi = settings.dpi;
+    let dpi = dpi.unwrap_or(settings.dpi);
     tauri::async_runtime::spawn_blocking(move || {
         // Wrap in catch_unwind so an unexpected panic inside the OCR worker
         // surfaces as a readable error string rather than an opaque JoinError.
@@ -80,6 +118,11 @@ async fn enqueue_jobs(
 }
 
 #[tauri::command]
+fn cancel_job(job_id: String) -> bool {
+    pipeline::request_cancel(&job_id)
+}
+
+#[tauri::command]
 fn copy_file_to_clipboard(
     clipboard: tauri::State<Clipboard<Wry>>,
     path: String,
@@ -92,9 +135,7 @@ fn copy_file_to_clipboard(
 #[tauri::command]
 fn open_output_folder(path: String) -> Result<(), String> {
     let p = std::path::PathBuf::from(&path);
-    let folder = p
-        .parent()
-        .ok_or_else(|| "no parent folder".to_string())?;
+    let folder = p.parent().ok_or_else(|| "no parent folder".to_string())?;
     std::process::Command::new("explorer")
         .arg(folder)
         .spawn()
@@ -103,9 +144,29 @@ fn open_output_folder(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn reveal_in_explorer(path: String) -> Result<(), String> {
+    let target = std::path::PathBuf::from(&path);
+    if !target.exists() {
+        return Err("file does not exist".to_string());
+    }
+
+    std::process::Command::new("explorer")
+        .arg("/select,")
+        .arg(target)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn check_model_exists() -> bool {
     let settings = Settings::load();
-    llm::runtime_has_llama_cli() && models::has_vision_model(&settings)
+    llm::runtime_has_ocr_runner() && models::has_vision_model(&settings)
+}
+
+#[tauri::command]
+fn get_model_catalog() -> Result<models::ModelCatalog, String> {
+    models::get_model_catalog().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -114,7 +175,10 @@ fn list_models() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-async fn download_model(app: tauri::AppHandle, model: String) -> Result<models::DownloadResult, String> {
+async fn download_model(
+    app: tauri::AppHandle,
+    model: String,
+) -> Result<models::DownloadResult, String> {
     models::download_model(&app, &model)
         .await
         .map_err(|e| e.to_string())
@@ -137,17 +201,58 @@ fn get_settings() -> Settings {
 }
 
 #[tauri::command]
-fn set_settings(settings: Settings) -> Result<(), String> {
-    settings.save().map_err(|e| e.to_string())
+fn get_onboarding_info() -> Result<OnboardingInfo, String> {
+    let model_storage_path = models::ensure_models_dir()
+        .map_err(|e| e.to_string())?
+        .to_string_lossy()
+        .into_owned();
+
+    Ok(OnboardingInfo {
+        model_storage_path,
+        recommended_model_profile_id: models::recommended_model_profile_id().to_string(),
+        recommended_model_label: models::recommended_model_label().to_string(),
+        recommended_model_file: models::recommended_model_file_name().to_string(),
+        recommended_model_repo: models::recommended_model_repo().to_string(),
+    })
 }
 
+#[tauri::command]
+fn set_settings(settings: Settings) -> Result<(), String> {
+    settings.save().map_err(|e| e.to_string())?;
+    llm::shutdown_persistent_worker();
+    Ok(())
+}
 
+fn write_pasted_image(image_base64: &str, mime_type: &str) -> Result<String, String> {
+    let encoded = image_base64
+        .split_once(',')
+        .map(|(_, payload)| payload)
+        .unwrap_or(image_base64);
 
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| e.to_string())?;
 
+    let mut dir = dirs::data_local_dir()
+        .ok_or_else(|| "could not resolve local app data directory".to_string())?;
+    dir.push("VisiTexta");
+    dir.push("pasted-inputs");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
+    let extension = match mime_type.to_ascii_lowercase().as_str() {
+        value if value.contains("jpeg") || value.contains("jpg") => "jpg",
+        value if value.contains("webp") => "webp",
+        _ => "png",
+    };
 
+    let filename = format!(
+        "pasted-image-{}-{}.{}",
+        chrono::Local::now().format("%Y%m%d-%H%M%S"),
+        &Uuid::new_v4().simple().to_string()[..8],
+        extension
+    );
+    let path = dir.join(filename);
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
 
-
-
-
-
+    Ok(path.to_string_lossy().into_owned())
+}

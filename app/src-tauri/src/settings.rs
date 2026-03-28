@@ -13,6 +13,7 @@ pub struct Settings {
     pub chunk_size: usize,
     pub auto_open: bool,
     pub theme: Option<String>,
+    pub model_profile_id: Option<String>,
     pub model_file: Option<String>,
 }
 
@@ -24,6 +25,7 @@ impl Default for Settings {
             chunk_size: 3000,
             auto_open: false,
             theme: None,
+            model_profile_id: None,
             model_file: None,
         }
     }
@@ -56,9 +58,8 @@ impl Settings {
 }
 
 fn settings_path() -> Result<PathBuf> {
-    let mut base = dirs::config_dir().ok_or_else(|| {
-        PipelineError::InvalidInput("could not resolve config directory".into())
-    })?;
+    let mut base = dirs::config_dir()
+        .ok_or_else(|| PipelineError::InvalidInput("could not resolve config directory".into()))?;
     base.push(APP_DIR);
     base.push(SETTINGS_FILE);
     Ok(base)

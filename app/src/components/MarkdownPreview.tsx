@@ -6,15 +6,41 @@ type MarkdownPreviewProps = {
   job?: JobResult | null
   renderedMarkdown: string
   stream?: JobStreamState | null
+  onRetry?: () => void
+  onCancel?: () => void
+  onOpenOutputFolder?: () => void
+  onRevealInExplorer?: () => void
+  onCopyMarkdown?: () => void
+  isCancelRequested?: boolean
 }
 
-export function MarkdownPreview({ job, renderedMarkdown, stream }: MarkdownPreviewProps) {
+function getFileName(path?: string | null) {
+  if (!path) return 'Nothing selected'
+  const parts = path.split(/[/\\]/)
+  return parts[parts.length - 1] || path
+}
+
+export function MarkdownPreview({
+  job,
+  renderedMarkdown,
+  stream,
+  onRetry,
+  onCancel,
+  onOpenOutputFolder,
+  onRevealInExplorer,
+  onCopyMarkdown,
+  isCancelRequested,
+}: MarkdownPreviewProps) {
   const streamText = stream?.streamed_markdown?.trim() || ''
   const markdown = renderedMarkdown || streamText
   const isStreaming = job ? !['Done', 'Failed', 'Canceled'].includes(job.status) : false
   const streamRef = useRef<HTMLPreElement | null>(null)
   const [selectedPageNumber, setSelectedPageNumber] = useState<number | null>(null)
-  const [animatedStream, setAnimatedStream] = useState('')
+  const canRetry = Boolean(job && !isStreaming)
+  const canCancel = Boolean(job && isStreaming && !isCancelRequested)
+  const canOpenFolder = Boolean(job?.output_path)
+  const canReveal = Boolean(job?.output_path || job?.source)
+  const canCopy = Boolean(markdown.trim())
 
   const pages = useMemo<JobPreviewPage[]>(() => {
     if (stream?.pages?.length) {
@@ -31,86 +57,116 @@ export function MarkdownPreview({ job, renderedMarkdown, stream }: MarkdownPrevi
     }
 
     return []
-  }, [stream?.current_page, stream?.pages, stream?.preview_image_data_url])
+  }, [stream])
+
+  const resolvedSelectedPageNumber =
+    selectedPageNumber && pages.some((page) => page.page_number === selectedPageNumber)
+      ? selectedPageNumber
+      : stream?.current_page || pages[0]?.page_number || null
 
   const activePage = useMemo(() => {
     if (!pages.length) return null
     return (
-      pages.find((page) => page.page_number === selectedPageNumber) ||
+      pages.find((page) => page.page_number === resolvedSelectedPageNumber) ||
       pages.find((page) => page.page_number === stream?.current_page) ||
       pages[0]
     )
-  }, [pages, selectedPageNumber, stream?.current_page])
-
-  useEffect(() => {
-    setSelectedPageNumber(stream?.current_page || pages[0]?.page_number || null)
-  }, [job?.job_id])
-
-  useEffect(() => {
-    if (!pages.length) {
-      setSelectedPageNumber(null)
-      return
-    }
-
-    if (isStreaming && stream?.current_page) {
-      setSelectedPageNumber(stream.current_page)
-      return
-    }
-
-    if (!selectedPageNumber || !pages.some((page) => page.page_number === selectedPageNumber)) {
-      setSelectedPageNumber(stream?.current_page || pages[0].page_number)
-    }
-  }, [isStreaming, pages, selectedPageNumber, stream?.current_page])
-
-  useEffect(() => {
-    if (!streamText) {
-      setAnimatedStream('')
-      return
-    }
-
-    if (!streamText.startsWith(animatedStream)) {
-      setAnimatedStream(streamText)
-      return
-    }
-
-    if (animatedStream === streamText) {
-      return
-    }
-
-    const pendingLength = streamText.length - animatedStream.length
-    const step = Math.min(36, Math.max(6, Math.ceil(pendingLength / 14)))
-    const timer = window.setTimeout(() => {
-      setAnimatedStream(streamText.slice(0, animatedStream.length + step))
-    }, 18)
-
-    return () => window.clearTimeout(timer)
-  }, [animatedStream, streamText])
+  }, [pages, resolvedSelectedPageNumber, stream?.current_page])
 
   useEffect(() => {
     const element = streamRef.current
     if (!element) return
     element.scrollTop = element.scrollHeight
-  }, [animatedStream])
+  }, [streamText])
+
+  const streamStatus = useMemo(() => {
+    if (!stream) return isStreaming ? 'Working' : 'Ready'
+
+    if (stream.runner_stage === 'WorkerStarting') {
+      return stream.runner_mode === 'Persistent' ? 'Starting local engine' : 'Starting OCR'
+    }
+
+    if (stream.runner_stage === 'ModelReady') {
+      return stream.runner_mode === 'Persistent' ? 'Local engine ready' : 'OCR ready'
+    }
+
+    if (stream.runner_stage === 'FirstToken' || stream.runner_stage === 'Chunk') {
+      return 'Reading text'
+    }
+
+    if (stream.runner_stage === 'Error') {
+      return stream.runner_message || 'Trying again'
+    }
+
+    return isStreaming ? 'Working' : 'Ready'
+  }, [isStreaming, stream])
+
+  const previewStateLabel = useMemo(() => {
+    if (!job) return 'Ready'
+    if (isCancelRequested) return 'Stopping'
+    if (job.status === 'Done') return 'Ready'
+    if (job.status === 'Failed') return 'Needs attention'
+    if (job.status === 'Canceled') return 'Canceled'
+    if (job.status === 'Rendering') return 'Preparing pages'
+    if (job.status === 'Formatting') return 'Cleaning text'
+    if (job.status === 'Writing') return 'Saving'
+    return 'Reading text'
+  }, [isCancelRequested, job])
+
+  const feedback = useMemo(() => {
+    if (!job) return null
+    if (job.status === 'Done') {
+      return { tone: 'success', message: 'Markdown is ready. You can copy it or open the folder.' }
+    }
+    if (job.status === 'Failed') {
+      return { tone: 'error', message: job.error || 'This file could not be completed.' }
+    }
+    if (job.status === 'Canceled') {
+      return { tone: 'warning', message: 'This job was canceled before it finished.' }
+    }
+    if (isCancelRequested) {
+      return { tone: 'warning', message: 'Stopping after the current step finishes.' }
+    }
+    return null
+  }, [isCancelRequested, job])
 
   return (
     <div className="preview">
-      <div className="panel-title">Live Workspace</div>
-      {!job && <div className="preview-empty">Select a job to preview.</div>}
+      <div className="panel-title">Preview</div>
+      {!job && <div className="preview-empty">Choose a job to see pages, live text, and markdown.</div>}
       {job && (
         <div className="preview-content">
           <div className="preview-header">
             <div>
-              <div className="preview-name">{job.source}</div>
-              <div className="preview-path">{job.output_path || stream?.source || 'Streaming locally'}</div>
+              <div className="preview-name">{getFileName(job.source)}</div>
+              <div className="preview-path">{job.output_path || stream?.source || 'Working locally on this PC'}</div>
             </div>
             <div className={`preview-state ${isStreaming ? 'live' : 'done'}`}>
-              {isStreaming ? 'Live' : job.status}
+              {previewStateLabel}
             </div>
           </div>
+          <div className="preview-actions">
+            <button className="btn ghost" onClick={onRetry} disabled={!canRetry}>
+              Retry
+            </button>
+            <button className="btn ghost" onClick={onCancel} disabled={!canCancel}>
+              {isCancelRequested ? 'Stopping...' : 'Cancel'}
+            </button>
+            <button className="btn ghost" onClick={onOpenOutputFolder} disabled={!canOpenFolder}>
+              Open output folder
+            </button>
+            <button className="btn ghost" onClick={onRevealInExplorer} disabled={!canReveal}>
+              Reveal in Explorer
+            </button>
+            <button className="btn primary" onClick={onCopyMarkdown} disabled={!canCopy}>
+              Copy markdown
+            </button>
+          </div>
+          {feedback && <div className={`preview-feedback ${feedback.tone}`}>{feedback.message}</div>}
           <div className="preview-grid">
             <div className="preview-stage">
               <div className="preview-section-header">
-                <span>Page browser</span>
+                <span>Pages</span>
                 {activePage && stream?.total_pages && (
                   <span>{`Page ${activePage.page_number} / ${stream.total_pages}`}</span>
                 )}
@@ -128,7 +184,7 @@ export function MarkdownPreview({ job, renderedMarkdown, stream }: MarkdownPrevi
                     Previous
                   </button>
                   <div className="preview-page-label">
-                    {activePage ? `Viewing page ${activePage.page_number}` : 'Waiting for page'}
+                    {activePage ? `Showing page ${activePage.page_number}` : 'Waiting for a page'}
                   </div>
                   <button
                     className="btn ghost"
@@ -153,7 +209,7 @@ export function MarkdownPreview({ job, renderedMarkdown, stream }: MarkdownPrevi
                   />
                 ) : (
                   <div className="preview-placeholder">
-                    The current PDF page or image will appear here while OCR runs.
+                    The current page will appear here while text is being extracted.
                   </div>
                 )}
               </div>
@@ -178,22 +234,22 @@ export function MarkdownPreview({ job, renderedMarkdown, stream }: MarkdownPrevi
             <div className="preview-stack">
               <div className="preview-console">
                 <div className="preview-section-header">
-                  <span>Streaming OCR</span>
-                  <span>{isStreaming ? 'Typing live' : 'Finalized'}</span>
+                  <span>Live text</span>
+                  <span>{streamStatus}</span>
                 </div>
                 <pre ref={streamRef} className="preview-stream">
-                  {animatedStream ? <span className="preview-stream-text">{animatedStream}</span> : 'Waiting for OCR output...'}
+                  {streamText ? <span className="preview-stream-text">{streamText}</span> : 'Waiting for extracted text...'}
                   {isStreaming && <span className="preview-caret" aria-hidden="true" />}
                 </pre>
               </div>
 
               <div className="preview-rendered">
                 <div className="preview-section-header">
-                  <span>Markdown render</span>
-                  <span>{job.status}</span>
+                  <span>Markdown</span>
+                  <span>{previewStateLabel}</span>
                 </div>
                 <div className="preview-markdown">
-                  <ReactMarkdown>{markdown || 'No markdown loaded yet.'}</ReactMarkdown>
+                  <ReactMarkdown>{markdown || 'Markdown will appear here when text is ready.'}</ReactMarkdown>
                 </div>
               </div>
             </div>

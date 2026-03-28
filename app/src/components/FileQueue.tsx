@@ -11,6 +11,17 @@ const statusTone: Record<string, string> = {
   Canceled: 'bad',
 }
 
+const statusLabel: Record<string, string> = {
+  Done: 'Ready',
+  Failed: 'Needs attention',
+  Queued: 'Waiting',
+  Rendering: 'Preparing pages',
+  Ocr: 'Reading text',
+  Formatting: 'Cleaning text',
+  Writing: 'Saving',
+  Canceled: 'Canceled',
+}
+
 type FileQueueProps = {
   jobs: JobResult[]
   selectedId?: string | null
@@ -18,13 +29,18 @@ type FileQueueProps = {
   onSelect: (jobId: string) => void
 }
 
+function getFileName(path: string) {
+  const parts = path.split(/[/\\]/)
+  return parts[parts.length - 1] || path
+}
+
 export function FileQueue({ jobs, selectedId, streams, onSelect }: FileQueueProps) {
   return (
     <div className="queue">
-      <div className="panel-title">File Queue</div>
+      <div className="panel-title">Recent jobs</div>
       <div className="queue-list">
         {jobs.length === 0 && (
-          <div className="queue-empty">Drop a file to start.</div>
+          <div className="queue-empty">No files yet. Drop, paste, or choose a file to start.</div>
         )}
         {jobs.map((job) => {
           const progress = Math.round((job.progress ?? 0) * 100)
@@ -34,7 +50,9 @@ export function FileQueue({ jobs, selectedId, streams, onSelect }: FileQueueProp
             stream?.current_page && stream?.total_pages
               ? `Page ${stream.current_page}/${stream.total_pages}`
               : null
-          const detail = job.error ?? pageLabel ?? job.message ?? ''
+          const detail =
+            job.error ?? stream?.runner_message ?? job.message ?? pageLabel ?? ''
+          const displayName = getFileName(job.source)
 
           return (
             <button
@@ -43,9 +61,12 @@ export function FileQueue({ jobs, selectedId, streams, onSelect }: FileQueueProp
               onClick={() => onSelect(job.job_id)}
             >
               <div className="queue-row">
-                <div className="queue-name">{job.source}</div>
+                <div className="queue-primary">
+                  <div className="queue-name">{displayName}</div>
+                  <div className="queue-secondary">{job.source}</div>
+                </div>
                 <span className={`status-pill ${statusTone[job.status] || 'warn'}`}>
-                  {job.status}
+                  {statusLabel[job.status] || job.status}
                 </span>
               </div>
               <div className="queue-progress">

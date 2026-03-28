@@ -1,22 +1,33 @@
 use crate::errors::{PipelineError, Result};
 use pdfium_render::prelude::*;
 use std::path::{Path, PathBuf};
-use tempfile::TempDir;
 
-pub struct RenderedPdf {
-    pub images: Vec<PathBuf>,
-    pub _tempdir: TempDir, // keeps files alive
+#[derive(Debug, Clone)]
+pub struct RenderedPdfPage {
+    pub page_number: usize,
+    pub total_pages: usize,
+    pub rendered_path: PathBuf,
 }
 
-pub fn render_pdf_to_images(path: &Path, dpi: u16) -> Result<RenderedPdf> {
+pub fn render_pdf_pages_lazy<S, F>(
+    path: &Path,
+    dpi: u16,
+    tempdir: &Path,
+    mut on_start: S,
+    mut on_page: F,
+) -> Result<()>
+where
+    S: FnMut(usize) -> Result<()>,
+    F: FnMut(RenderedPdfPage) -> Result<()>,
+{
     let pdfium = Pdfium::new(resolve_pdfium_bindings()?);
 
     let doc = pdfium
         .load_pdf_from_file(path, None)
         .map_err(|e| PipelineError::Pdf(format!("load failed: {e}")))?;
 
-    let tempdir = tempfile::tempdir()?;
-    let mut images = Vec::new();
+    let total_pages = doc.pages().len();
+    on_start(total_pages)?;
 
     for (idx, page) in doc.pages().iter().enumerate() {
         let width_px = ((page.width().value as f32 / 72.0) * dpi as f32).round() as i32;
@@ -31,16 +42,18 @@ pub fn render_pdf_to_images(path: &Path, dpi: u16) -> Result<RenderedPdf> {
             .map_err(|e| PipelineError::Pdf(format!("render page {idx} failed: {e}")))?;
 
         let image = bitmap.as_image();
-        let out_path = tempdir
-            .path()
-            .join(format!("page-{}.png", idx + 1));
+        let out_path = tempdir.join(format!("page-{}.png", idx + 1));
         image
             .save(&out_path)
             .map_err(|e| PipelineError::Pdf(format!("save page {idx} failed: {e}")))?;
-        images.push(out_path);
+        on_page(RenderedPdfPage {
+            page_number: idx + 1,
+            total_pages,
+            rendered_path: out_path,
+        })?;
     }
 
-    Ok(RenderedPdf { images, _tempdir: tempdir })
+    Ok(())
 }
 
 fn resolve_pdfium_bindings() -> Result<Box<dyn PdfiumLibraryBindings>> {
@@ -100,7 +113,8 @@ fn resolve_pdfium_bindings() -> Result<Box<dyn PdfiumLibraryBindings>> {
         .collect::<Vec<_>>()
         .join("; ");
 
-    let detail = last_err.unwrap_or_else(|| "pdfium.dll was not found in known runtime locations".to_string());
+    let detail = last_err
+        .unwrap_or_else(|| "pdfium.dll was not found in known runtime locations".to_string());
     Err(PipelineError::Pdf(format!(
         "pdfium bind failed: {detail}. Searched: {tried}. Place pdfium.dll in app bin/resources/bin."
     )))

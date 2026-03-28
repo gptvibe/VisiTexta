@@ -16,7 +16,7 @@ export function ToastNotifications({ toasts, onDismiss }: ToastNotificationsProp
         <div key={toast.id} className={`toast ${toast.tone || 'info'}`}>
           <span>{toast.message}</span>
           <button className="btn ghost" onClick={() => onDismiss(toast.id)}>
-            Dismiss
+            Close
           </button>
         </div>
       ))}

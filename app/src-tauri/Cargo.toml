@@ -40,5 +40,5 @@ pdfium-render = { version = "0.8.37", features = ["pdfium_latest", "pdfium_use_w
 image = "0.25"
 imageproc = "0.25"
 regex = "1.11"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "stream", "rustls-tls"] }
 base64 = "0.22"
