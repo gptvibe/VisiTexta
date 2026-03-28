@@ -44,6 +44,9 @@ export type JobStreamState = {
   runner_stage?: RunnerStage | null
   runner_message?: string | null
   first_token_received?: boolean
+  lazy_preview_thumbnails?: boolean
+  disable_rich_preview_for_large_jobs?: boolean
+  large_job_page_threshold?: number | null
 }
 
 export type AppEvent =
@@ -112,6 +115,10 @@ export type Settings = {
   chunk_size: number
   auto_open: boolean
   runtime_profile: RuntimeProfile
+  max_ocr_dimension: number
+  lazy_preview_thumbnails: boolean
+  disable_rich_preview_for_large_jobs: boolean
+  large_job_page_threshold: number
   theme?: string | null
   model_profile_id?: string | null
   model_file?: string | null
@@ -171,6 +178,20 @@ export type ExtractionPreset = {
   dpi: number
   description: string
   meta: string
+  tradeoff: string
+  runtime_profile_override?: RuntimeProfile | null
+  max_ocr_dimension?: number | null
+  lazy_preview_thumbnails: boolean
+  disable_rich_preview_for_large_jobs: boolean
+  large_job_page_threshold?: number | null
+}
+
+export type RunOptions = {
+  runtime_profile?: RuntimeProfile | null
+  max_ocr_dimension?: number | null
+  lazy_preview_thumbnails?: boolean | null
+  disable_rich_preview_for_large_jobs?: boolean | null
+  large_job_page_threshold?: number | null
 }
 
 export type AppDefaults = {
@@ -236,9 +257,32 @@ export type StorageInfo = {
 }
 
 export type OnboardingInfo = {
+  storage_mode: 'portable' | 'installer'
+  app_storage_path: string
+  settings_storage_path: string
+  history_storage_path: string
   model_storage_path: string
+  temp_storage_path: string
+  pasted_inputs_path: string
+  output_description: string
   recommended_model_profile_id: string
   recommended_model_label: string
   recommended_model_file: string
   recommended_model_repo: string
+}
+
+export type RecommendedSetupInfo = {
+  profile_id: string
+  label: string
+  family: string
+  repo: string
+  file_name: string
+  mmproj_file?: string | null
+  requires_mmproj: boolean
+  estimated_download_bytes?: number | null
+  primary_download_bytes?: number | null
+  companion_download_bytes?: number | null
+  validation: string
+  notes: string
+  availability_error?: string | null
 }

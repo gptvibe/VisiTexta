@@ -68,6 +68,7 @@ pub fn run() {
             get_runtime_status,
             get_onboarding_info,
             get_storage_info,
+            get_recommended_setup_info,
             get_job_history,
             set_settings,
             copy_file_to_clipboard,
@@ -90,8 +91,9 @@ async fn enqueue_jobs(
     paths: Vec<String>,
     prompt: Option<String>,
     dpi: Option<u16>,
+    run_options: Option<pipeline::PipelineRunOptions>,
 ) -> Result<Vec<JobResult>, String> {
-    enqueue_paths(app, paths, prompt, dpi).await
+    enqueue_paths(app, paths, prompt, dpi, run_options).await
 }
 
 #[tauri::command]
@@ -101,9 +103,10 @@ async fn enqueue_pasted_image(
     mime_type: String,
     prompt: Option<String>,
     dpi: Option<u16>,
+    run_options: Option<pipeline::PipelineRunOptions>,
 ) -> Result<Vec<JobResult>, String> {
     let path = write_pasted_image(&image_base64, &mime_type)?;
-    enqueue_paths(app, vec![path], prompt, dpi).await
+    enqueue_paths(app, vec![path], prompt, dpi, run_options).await
 }
 
 async fn enqueue_paths(
@@ -111,6 +114,7 @@ async fn enqueue_paths(
     paths: Vec<String>,
     prompt: Option<String>,
     dpi: Option<u16>,
+    run_options: Option<pipeline::PipelineRunOptions>,
 ) -> Result<Vec<JobResult>, String> {
     let settings = Settings::load();
     let dpi = dpi.unwrap_or(settings.dpi);
@@ -118,7 +122,7 @@ async fn enqueue_paths(
         // Wrap in catch_unwind so an unexpected panic inside the OCR worker
         // surfaces as a readable error string rather than an opaque JoinError.
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            pipeline::process_batch(&app, paths, dpi, prompt)
+            pipeline::process_batch(&app, paths, dpi, prompt, run_options)
         }))
         .unwrap_or_else(|payload| {
             let msg = payload
@@ -178,9 +182,12 @@ fn reveal_in_explorer(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn check_model_exists() -> bool {
+fn check_model_exists(profile: Option<runtime::RuntimeProfile>) -> bool {
     let settings = Settings::load();
-    runtime::runtime_has_ocr_runner(settings.runtime_profile) && models::has_vision_model(&settings)
+    let selected = profile.unwrap_or(settings.runtime_profile);
+    let mut effective_settings = settings.clone();
+    effective_settings.runtime_profile = selected;
+    runtime::runtime_has_ocr_runner(selected) && models::has_vision_model(&effective_settings)
 }
 
 #[tauri::command]
@@ -255,6 +262,11 @@ fn get_onboarding_info() -> Result<OnboardingInfo, String> {
 #[tauri::command]
 fn get_storage_info() -> Result<storage::StorageInfo, String> {
     storage::storage_info().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_recommended_setup_info() -> models::RecommendedSetupInfo {
+    models::recommended_setup_info().await
 }
 
 #[tauri::command]

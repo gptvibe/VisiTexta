@@ -1,63 +1,148 @@
-type WizardStep = {
-  title: string
-  body: string
-  detail: string
-}
-
 type FirstRunWizardProps = {
   open: boolean
-  step: number
-  steps: WizardStep[]
-  onBack: () => void
-  onNext: () => void
-  onSkip: () => void
+  statusLabel: string
+  statusTone: 'info' | 'success' | 'warning' | 'error'
+  title: string
+  description: string
+  storageModeLabel: string
+  storagePath: string
+  storageHint: string
+  estimatedDiskUse: string
+  modelLabel: string
+  modelFamily: string
+  modelFile: string
+  mmprojFile?: string | null
+  validationStatus: string
+  validationTone: 'info' | 'success' | 'warning' | 'error'
+  downloadStatus: string
+  helperMessage?: string | null
+  progressPercent: number
+  showProgress: boolean
+  canStart: boolean
+  canRetry: boolean
+  isWorking: boolean
+  onStart: () => void
+  onRetry: () => void
+  onCancel: () => void
+  onOpenSettings: () => void
 }
 
 export function FirstRunWizard({
   open,
-  step,
-  steps,
-  onBack,
-  onNext,
-  onSkip,
+  statusLabel,
+  statusTone,
+  title,
+  description,
+  storageModeLabel,
+  storagePath,
+  storageHint,
+  estimatedDiskUse,
+  modelLabel,
+  modelFamily,
+  modelFile,
+  mmprojFile,
+  validationStatus,
+  validationTone,
+  downloadStatus,
+  helperMessage,
+  progressPercent,
+  showProgress,
+  canStart,
+  canRetry,
+  isWorking,
+  onStart,
+  onRetry,
+  onCancel,
+  onOpenSettings,
 }: FirstRunWizardProps) {
   if (!open) return null
 
-  const current = steps[step] ?? steps[0]
-  if (!current) return null
-
-  const isLastStep = step === steps.length - 1
-
   return (
-    <section className="onboarding-card" aria-label="First-run guide">
-      <div className="onboarding-header">
-        <div>
-          <div className="section-title">First-run guide</div>
-          <div className="onboarding-title">{current.title}</div>
+    <div className="modal-shell first-run-modal-shell" role="dialog" aria-modal="true">
+      <div className="modal-overlay" onClick={onCancel} />
+      <section className="modal-panel first-run-modal" aria-label="First-run OCR setup">
+        <div className="first-run-header">
+          <div>
+            <div className="section-title">First-run setup</div>
+            <div className="first-run-title">{title}</div>
+          </div>
+          <div className={`setup-card-badge first-run-status-badge ${statusTone}`}>
+            {statusLabel}
+          </div>
         </div>
-        <button className="btn ghost" onClick={onSkip}>
-          Skip
-        </button>
-      </div>
-      <p className="onboarding-body">{current.body}</p>
-      <div className="onboarding-detail">{current.detail}</div>
-      <div className="onboarding-progress">
-        <span>{`Step ${step + 1} of ${steps.length}`}</span>
-        <div className="onboarding-progress-bar" aria-hidden="true">
-          <div
-            className="onboarding-progress-fill"
-            style={{ width: `${((step + 1) / steps.length) * 100}%` }}
-          />
+
+        <p className="first-run-body">{description}</p>
+
+        <div className="first-run-grid">
+          <article className="first-run-card">
+            <div className="section-title">Storage</div>
+            <div className="first-run-card-title">{storageModeLabel}</div>
+            <div className="field-note">{storageHint}</div>
+            <div className="model-profile-meta">
+              <span>Model files</span>
+              <strong>{storagePath}</strong>
+            </div>
+            <div className="model-profile-meta">
+              <span>Estimated disk use</span>
+              <strong>{estimatedDiskUse}</strong>
+            </div>
+          </article>
+
+          <article className="first-run-card">
+            <div className="section-title">Recommended model</div>
+            <div className="first-run-card-title">{modelLabel}</div>
+            <div className="field-note">{modelFamily}</div>
+            <div className="model-profile-meta">
+              <span>Main file</span>
+              <strong>{modelFile}</strong>
+            </div>
+            {mmprojFile && (
+              <div className="model-profile-meta">
+                <span>Companion file</span>
+                <strong>{mmprojFile}</strong>
+              </div>
+            )}
+          </article>
+
+          <article className="first-run-card">
+            <div className="section-title">Validation</div>
+            <div className={`status-pill ${validationTone === 'success' ? 'ok' : validationTone === 'error' ? 'bad' : validationTone === 'warning' ? 'warn' : ''}`}>
+              {validationStatus}
+            </div>
+            <div className="field-note">{downloadStatus}</div>
+            {helperMessage && <div className="field-note">{helperMessage}</div>}
+          </article>
         </div>
-      </div>
-      <div className="onboarding-actions">
-        <button className="btn ghost" onClick={onBack} disabled={step === 0}>
-          Back
-        </button>
-        <button className="btn primary" onClick={onNext}>
-          {isLastStep ? 'Start extraction' : 'Next'}
-        </button>
-      </div>
-    </section>
+
+        {showProgress && (
+          <div className="model-progress first-run-progress">
+            <div className="model-progress-bar">
+              <div className="model-progress-fill" style={{ width: `${progressPercent}%` }} />
+            </div>
+            <div className="model-progress-text">{downloadStatus}</div>
+          </div>
+        )}
+
+        <div className="first-run-actions">
+          <button className="btn ghost" onClick={onOpenSettings}>
+            Advanced settings
+          </button>
+          <div className="first-run-action-group">
+            <button className="btn ghost" onClick={onCancel}>
+              {isWorking ? 'Hide' : 'Cancel'}
+            </button>
+            {canRetry ? (
+              <button className="btn primary" onClick={onRetry}>
+                Retry download
+              </button>
+            ) : canStart ? (
+              <button className="btn primary" onClick={onStart} disabled={isWorking}>
+                {isWorking ? 'Preparing...' : 'Download recommended model'}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </section>
+    </div>
   )
 }

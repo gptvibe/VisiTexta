@@ -41,6 +41,7 @@ export function MarkdownPreview({
   const canOpenFolder = Boolean(job?.output_path)
   const canReveal = Boolean(job?.output_path || job?.source)
   const canCopy = Boolean(markdown.trim())
+  const lazyThumbnailLimit = 8
 
   const pages = useMemo<JobPreviewPage[]>(() => {
     if (stream?.pages?.length) {
@@ -72,6 +73,26 @@ export function MarkdownPreview({
       pages[0]
     )
   }, [pages, resolvedSelectedPageNumber, stream?.current_page])
+
+  const richPreviewSuppressed = Boolean(
+    stream?.disable_rich_preview_for_large_jobs &&
+      (stream?.total_pages ?? 0) >= (stream?.large_job_page_threshold ?? Number.MAX_SAFE_INTEGER) &&
+      pages.length === 0
+  )
+
+  const visibleThumbnails = useMemo(() => {
+    if (!stream?.lazy_preview_thumbnails || pages.length <= lazyThumbnailLimit) {
+      return pages
+    }
+
+    const anchor = activePage?.page_number ?? pages[0]?.page_number ?? 1
+    const anchorIndex = Math.max(
+      0,
+      pages.findIndex((page) => page.page_number === anchor)
+    )
+    const start = Math.max(0, anchorIndex - Math.floor(lazyThumbnailLimit / 2))
+    return pages.slice(start, start + lazyThumbnailLimit)
+  }, [activePage?.page_number, pages, stream?.lazy_preview_thumbnails])
 
   useEffect(() => {
     const element = streamRef.current
@@ -207,15 +228,19 @@ export function MarkdownPreview({
                     src={activePage.image_data_url}
                     alt={job.source}
                   />
+                ) : richPreviewSuppressed ? (
+                  <div className="preview-placeholder">
+                    Rich preview is disabled for this large job to keep memory use lower. Live text and markdown will keep updating while OCR runs.
+                  </div>
                 ) : (
                   <div className="preview-placeholder">
                     The current page will appear here while text is being extracted.
                   </div>
                 )}
               </div>
-              {pages.length > 1 && (
+              {visibleThumbnails.length > 1 && (
                 <div className="preview-thumbnails" role="tablist" aria-label="Scanned pages">
-                  {pages.map((page) => (
+                  {visibleThumbnails.map((page) => (
                     <button
                       key={page.page_number}
                       className={`preview-thumbnail ${page.page_number === activePage?.page_number ? 'selected' : ''}`}
@@ -227,6 +252,11 @@ export function MarkdownPreview({
                       <span>{`P${page.page_number}`}</span>
                     </button>
                   ))}
+                </div>
+              )}
+              {stream?.lazy_preview_thumbnails && pages.length > visibleThumbnails.length && (
+                <div className="preview-thumbnail-note">
+                  {`Showing ${visibleThumbnails.length} nearby page thumbnails to keep preview work lighter.`}
                 </div>
               )}
             </div>

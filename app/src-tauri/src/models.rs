@@ -122,6 +122,23 @@ pub struct DownloadResult {
     pub profile_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RecommendedSetupInfo {
+    pub profile_id: String,
+    pub label: String,
+    pub family: String,
+    pub repo: String,
+    pub file_name: String,
+    pub mmproj_file: Option<String>,
+    pub requires_mmproj: bool,
+    pub estimated_download_bytes: Option<u64>,
+    pub primary_download_bytes: Option<u64>,
+    pub companion_download_bytes: Option<u64>,
+    pub validation: &'static str,
+    pub notes: String,
+    pub availability_error: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeModelRequirements {
     pub mmproj_path: Option<PathBuf>,
@@ -313,6 +330,24 @@ pub fn recommended_model_file_name() -> &'static str {
     recommended_model_file()
 }
 
+pub async fn recommended_setup_info() -> RecommendedSetupInfo {
+    let profile = recommended_profile();
+    let client = match reqwest::Client::builder()
+        .user_agent("VisiTexta/1.0")
+        .build()
+    {
+        Ok(client) => client,
+        Err(err) => {
+            return build_recommended_setup_info(profile, None, Some(err.to_string()));
+        }
+    };
+
+    match fetch_model_info(&client, profile.repo).await {
+        Ok(info) => build_recommended_setup_info(profile, Some(&info), None),
+        Err(err) => build_recommended_setup_info(profile, None, Some(err.to_string())),
+    }
+}
+
 pub fn model_catalog() -> Result<ModelCatalog> {
     let mut local_models = discover_local_models()?;
     local_models.sort_by_key(|model| catalog_sort_key(model));
@@ -431,6 +466,56 @@ pub fn active_model_file(settings: &Settings) -> String {
 
 fn recommended_profile() -> &'static ModelProfileDefinition {
     profile_by_id(DEFAULT_MODEL_PROFILE_ID).expect("default model profile must exist")
+}
+
+fn build_recommended_setup_info(
+    profile: &ModelProfileDefinition,
+    info: Option<&HfModelInfo>,
+    availability_error: Option<String>,
+) -> RecommendedSetupInfo {
+    let main_metadata =
+        info.and_then(|value| remote_file_metadata_for(value, profile.default_file).ok());
+    let mmproj_file = info.and_then(select_mmproj_file_from_info);
+    let mmproj_metadata = info.and_then(|value| {
+        mmproj_file
+            .as_deref()
+            .and_then(|file| remote_file_metadata_for(value, file).ok())
+    });
+
+    RecommendedSetupInfo {
+        profile_id: profile.id.to_string(),
+        label: profile.label.to_string(),
+        family: profile.family.to_string(),
+        repo: profile.repo.to_string(),
+        file_name: profile.default_file.to_string(),
+        mmproj_file,
+        requires_mmproj: profile.requires_mmproj,
+        estimated_download_bytes: combined_download_estimate(
+            main_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.total_bytes),
+            mmproj_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.total_bytes),
+        ),
+        primary_download_bytes: main_metadata.and_then(|metadata| metadata.total_bytes),
+        companion_download_bytes: mmproj_metadata.and_then(|metadata| metadata.total_bytes),
+        validation: "sha256",
+        notes: profile.notes.to_string(),
+        availability_error,
+    }
+}
+
+fn combined_download_estimate(
+    main_bytes: Option<u64>,
+    companion_bytes: Option<u64>,
+) -> Option<u64> {
+    match (main_bytes, companion_bytes) {
+        (Some(main), Some(companion)) => Some(main + companion),
+        (Some(main), None) => Some(main),
+        (None, Some(companion)) => Some(companion),
+        (None, None) => None,
+    }
 }
 
 fn has_explicit_model_selection(settings: &Settings) -> bool {
@@ -1822,5 +1907,13 @@ mod tests {
         let inspected = experimental_inspection(Some("someone/custom-repo"), "custom.gguf");
         assert_eq!(inspected.support_tier, ModelSupportTier::Experimental);
         assert!(!inspected.auto_selectable);
+    }
+
+    #[test]
+    fn combined_download_estimate_prefers_known_sizes() {
+        assert_eq!(combined_download_estimate(Some(10), Some(5)), Some(15));
+        assert_eq!(combined_download_estimate(Some(10), None), Some(10));
+        assert_eq!(combined_download_estimate(None, Some(5)), Some(5));
+        assert_eq!(combined_download_estimate(None, None), None);
     }
 }

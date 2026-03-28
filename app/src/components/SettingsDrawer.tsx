@@ -261,6 +261,60 @@ export function SettingsDrawer({
               onChange={(event) => setDraft({ ...draft, dpi: Number(event.target.value) })}
             />
           </label>
+          <label className="field">
+            <span>Max OCR image size</span>
+            <input
+              type="number"
+              min={800}
+              max={2400}
+              step={100}
+              value={draft.max_ocr_dimension}
+              onChange={(event) =>
+                setDraft({ ...draft, max_ocr_dimension: Number(event.target.value) })
+              }
+            />
+          </label>
+          <label className="field checkbox">
+            <input
+              type="checkbox"
+              checked={draft.lazy_preview_thumbnails}
+              onChange={(event) =>
+                setDraft({ ...draft, lazy_preview_thumbnails: event.target.checked })
+              }
+            />
+            <span>Generate preview thumbnails lazily</span>
+          </label>
+          <label className="field checkbox">
+            <input
+              type="checkbox"
+              checked={draft.disable_rich_preview_for_large_jobs}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  disable_rich_preview_for_large_jobs: event.target.checked,
+                })
+              }
+            />
+            <span>Disable rich preview for large jobs</span>
+          </label>
+          <label className="field">
+            <span>Large-job page threshold</span>
+            <input
+              type="number"
+              min={2}
+              max={200}
+              value={draft.large_job_page_threshold}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  large_job_page_threshold: Number(event.target.value),
+                })
+              }
+            />
+          </label>
+          <div className="field-note">
+            Lower OCR image size and large-job preview limits reduce memory pressure, but page previews and tiny text detail can be less rich.
+          </div>
           <label className="field checkbox">
             <input
               type="checkbox"

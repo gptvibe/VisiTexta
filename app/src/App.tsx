@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { AppShell } from './components/AppShell'
+import { FirstRunWizard } from './components/FirstRunWizard'
 import { ImportPanel } from './components/ImportPanel'
 import { JobQueue } from './components/JobQueue'
 import { PreviewWorkspace } from './components/PreviewWorkspace'
@@ -19,6 +20,8 @@ import type {
   JobStreamState,
   ModelCatalog,
   ModelDownloadEvent,
+  RecommendedSetupInfo,
+  RunOptions,
   RuntimeStatus,
   RunnerMode,
   RunnerStage,
@@ -37,7 +40,7 @@ type ModelDownloadState = {
   total_bytes?: number | null
 }
 
-type PresetKey = 'recommended' | 'quality' | 'faster'
+type PresetKey = 'starter' | 'recommended' | 'quality' | 'faster'
 type ThemeChoice = 'light' | 'dark' | 'system'
 type ResolvedTheme = 'light' | 'dark'
 
@@ -45,8 +48,6 @@ const defaultDownloadState: ModelDownloadState = {
   status: 'idle',
   progress: 0,
 }
-
-const ONBOARDING_STORAGE_KEY = 'visitexta.onboarding.dismissed'
 
 function isActiveStatus(status: JobStatus) {
   return !['Done', 'Failed', 'Canceled'].includes(status)
@@ -205,20 +206,134 @@ function buildRunnerMessage(
   return backendMessage || 'Working locally.'
 }
 
-function readOnboardingDismissed() {
-  try {
-    return window.localStorage.getItem(ONBOARDING_STORAGE_KEY) === '1'
-  } catch {
-    return false
+function isDownloadActive(status: ModelDownloadState['status']) {
+  return status === 'starting' || status === 'downloading' || status === 'verifying'
+}
+
+function isNetworkError(message?: string | null) {
+  const value = message?.toLowerCase() ?? ''
+  return (
+    value.includes('dns') ||
+    value.includes('network') ||
+    value.includes('timeout') ||
+    value.includes('timed out') ||
+    value.includes('connection') ||
+    value.includes('offline') ||
+    value.includes('failed to send request')
+  )
+}
+
+function storageModeLabel(mode?: StorageInfo['mode'] | OnboardingInfo['storage_mode']) {
+  return mode === 'portable' ? 'Portable storage' : 'Installer storage'
+}
+
+function storageModeHint(mode?: StorageInfo['mode'] | OnboardingInfo['storage_mode']) {
+  return mode === 'portable'
+    ? 'Model files stay beside the portable app so you can move the whole setup together.'
+    : 'Model files stay under your local app data folder so the installed app can reuse them.'
+}
+
+function describeValidationStatus(downloadState: ModelDownloadState) {
+  const message = downloadState.message?.toLowerCase() ?? ''
+
+  if (downloadState.status === 'verifying') {
+    return {
+      tone: 'info' as const,
+      label: 'Validating download',
+    }
+  }
+
+  if (downloadState.status === 'done') {
+    if (message.includes('verified')) {
+      return {
+        tone: 'success' as const,
+        label: 'Checksum verified',
+      }
+    }
+
+    return {
+      tone: 'success' as const,
+      label: 'Ready to use',
+    }
+  }
+
+  if (downloadState.status === 'error') {
+    if (message.includes('checksum') || message.includes('mismatch')) {
+      return {
+        tone: 'error' as const,
+        label: 'Validation failed',
+      }
+    }
+
+    return {
+      tone: 'warning' as const,
+      label: 'Waiting to retry',
+    }
+  }
+
+  if (message.includes('resume')) {
+    return {
+      tone: 'info' as const,
+      label: 'Resume supported',
+    }
+  }
+
+  return {
+    tone: 'info' as const,
+    label: 'SHA-256 validation',
   }
 }
 
-function writeOnboardingDismissed() {
-  try {
-    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, '1')
-  } catch {
-    // Ignore local storage failures in restricted environments.
+function describeDownloadStatus(
+  downloadState: ModelDownloadState,
+  formatBytesLabel: (value?: number | null) => string | null
+) {
+  if (downloadState.status === 'error') {
+    return downloadState.message || 'Download failed.'
   }
+
+  if (downloadState.status === 'verifying') {
+    return downloadState.message || 'Verifying the downloaded files.'
+  }
+
+  if (downloadState.status === 'done') {
+    return downloadState.message || 'Model download is complete.'
+  }
+
+  if (downloadState.total_bytes) {
+    return `${Math.round(downloadState.progress * 100)}% (${formatBytesLabel(downloadState.downloaded_bytes)} / ${formatBytesLabel(downloadState.total_bytes)})`
+  }
+
+  if (downloadState.downloaded_bytes) {
+    return `${formatBytesLabel(downloadState.downloaded_bytes)} downloaded`
+  }
+
+  return downloadState.message || 'Ready to download the recommended model.'
+}
+
+function setupHelperMessage(
+  downloadState: ModelDownloadState,
+  recommendedSetupInfo: RecommendedSetupInfo | null
+) {
+  if (downloadState.message?.toLowerCase().includes('resum')) {
+    return 'A previous partial download was found, so setup can resume instead of starting over.'
+  }
+
+  if (downloadState.status === 'error') {
+    if (isNetworkError(downloadState.message)) {
+      return 'The network request did not complete. Check your connection and try again. Any partial model file can resume later.'
+    }
+
+    if (downloadState.message?.toLowerCase().includes('checksum')) {
+      return 'The download did not validate cleanly, so VisiTexta will fetch a fresh copy on retry.'
+    }
+  }
+
+  if (recommendedSetupInfo?.availability_error) {
+    return 'Size estimates could not be refreshed right now, but setup can still start when the network is available.'
+  }
+
+  return 'The recommended setup uses the same curated model catalog and downloader as Advanced settings.'
 }
 
 function removeCancelingJob(
@@ -246,6 +361,27 @@ function blobToDataUrl(blob: Blob) {
   })
 }
 
+function applyRunPreferencesToStreams(
+  previous: Record<string, JobStreamState>,
+  jobs: JobResult[],
+  runOptions: RunOptions | null
+) {
+  if (!jobs.length || !runOptions) return previous
+
+  const next = { ...previous }
+  for (const job of jobs) {
+    const current = next[job.job_id] ?? createEmptyStreamState()
+    next[job.job_id] = {
+      ...current,
+      lazy_preview_thumbnails: runOptions.lazy_preview_thumbnails ?? false,
+      disable_rich_preview_for_large_jobs:
+        runOptions.disable_rich_preview_for_large_jobs ?? false,
+      large_job_page_threshold: runOptions.large_job_page_threshold ?? null,
+    }
+  }
+  return next
+}
+
 function App() {
   const [appDefaults, setAppDefaults] = useState<AppDefaults | null>(null)
   const [busy, setBusy] = useState(false)
@@ -264,12 +400,11 @@ function App() {
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null)
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null)
   const [prompt, setPrompt] = useState('')
-  const [autoDownloadAttempted, setAutoDownloadAttempted] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [selectedPreset, setSelectedPreset] = useState<PresetKey | null>(null)
   const [onboardingInfo, setOnboardingInfo] = useState<OnboardingInfo | null>(null)
-  const [onboardingOpen, setOnboardingOpen] = useState(!readOnboardingDismissed())
-  const [onboardingStep, setOnboardingStep] = useState(0)
+  const [recommendedSetupInfo, setRecommendedSetupInfo] = useState<RecommendedSetupInfo | null>(null)
+  const [setupWizardOpen, setSetupWizardOpen] = useState(false)
   const [cancelingJobs, setCancelingJobs] = useState<Record<string, boolean>>({})
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() => readSystemTheme())
   const effectiveSettings = settings ?? appDefaults?.settings ?? null
@@ -338,7 +473,6 @@ function App() {
       : 'Recommended'
 
   const explicitModelFile = effectiveSettings?.model_file?.trim() || ''
-  const explicitModelProfileId = effectiveSettings?.model_profile_id?.trim() || ''
   const configuredModelLabel =
     explicitModelFile || selectedProfile?.label || activeModelTitle || 'Selected OCR model'
 
@@ -360,117 +494,125 @@ function App() {
     return streamText || markdown
   }, [markdown, selectedJob?.status, selectedStream?.streamed_markdown])
 
-  const effectiveDpi = useMemo(
-    () =>
-      selectedPreset
-        ? (presetOptions.find((preset) => preset.id === selectedPreset)?.dpi ?? effectiveSettings?.dpi ?? 300)
-        : effectiveSettings?.dpi ?? 300,
-    [effectiveSettings?.dpi, presetOptions, selectedPreset]
+  const selectedPresetConfig = useMemo(
+    () => presetOptions.find((preset) => preset.id === selectedPreset) ?? null,
+    [presetOptions, selectedPreset]
   )
 
-  const hasUsableRuntime = runtimeStatus?.usable_runtime ?? true
+  const effectiveDpi = useMemo(
+    () =>
+      selectedPresetConfig
+        ? selectedPresetConfig.dpi
+        : effectiveSettings?.dpi ?? 300,
+    [effectiveSettings?.dpi, selectedPresetConfig]
+  )
+
+  const effectiveRunOptions = useMemo<RunOptions | null>(() => {
+    if (!effectiveSettings) return null
+
+    return {
+      runtime_profile:
+        selectedPresetConfig?.runtime_profile_override ?? effectiveSettings.runtime_profile,
+      max_ocr_dimension:
+        selectedPresetConfig?.max_ocr_dimension ?? effectiveSettings.max_ocr_dimension,
+      lazy_preview_thumbnails:
+        selectedPresetConfig?.lazy_preview_thumbnails ?? effectiveSettings.lazy_preview_thumbnails,
+      disable_rich_preview_for_large_jobs:
+        selectedPresetConfig?.disable_rich_preview_for_large_jobs ??
+        effectiveSettings.disable_rich_preview_for_large_jobs,
+      large_job_page_threshold:
+        selectedPresetConfig?.large_job_page_threshold ??
+        effectiveSettings.large_job_page_threshold,
+    }
+  }, [effectiveSettings, selectedPresetConfig])
+
+  const effectiveRuntimeProfile =
+    effectiveRunOptions?.runtime_profile ?? effectiveSettings?.runtime_profile ?? null
+
   const runtimeSetupIssue = Boolean(runtimeStatus && !runtimeStatus.usable_runtime)
 
   const presetSummary = useMemo(() => {
     if (!selectedPreset) {
       return `Using advanced custom DPI (${effectiveSettings?.dpi ?? 300}).`
     }
-    const preset = presetOptions.find((option) => option.id === selectedPreset)
-    return `${preset?.label || 'Selected'} preset (${preset?.dpi ?? effectiveSettings?.dpi ?? 300} DPI).`
-  }, [effectiveSettings?.dpi, presetOptions, selectedPreset])
-
-  const onboardingSteps = useMemo(
-    () => [
-      {
-        title: 'Everything runs locally',
-        body: 'VisiTexta renders pages, reads text, and writes markdown on this PC. It is designed for offline OCR, not a cloud OCR service.',
-        detail: 'You can keep working even when you are offline after the model is downloaded.',
-      },
-      {
-        title: 'The first run downloads a model once',
-        body:
-          modelMissing || ['starting', 'downloading', 'verifying'].includes(downloadState.status)
-            ? 'The recommended OCR model is being downloaded for first-time setup. Keep the app open until it finishes.'
-            : 'If no local OCR model is installed, VisiTexta downloads the recommended model once and reuses it later.',
-        detail:
-          downloadState.status === 'error'
-            ? downloadState.message || 'The model download needs another try from Advanced settings.'
-            : 'After setup, future runs stay local unless you choose another model.',
-      },
-      {
-        title: 'Downloaded models are stored here',
-        body: onboardingInfo?.model_storage_path || 'Loading the storage location...',
-        detail: 'This is where downloaded OCR models are kept so the app can reuse them.',
-      },
-      {
-        title: 'Start with the recommended model',
-        body: `${onboardingInfo?.recommended_model_label || appDefaults?.recommended_model_label || 'GLM-OCR (Q4_K_M)'} uses ${onboardingInfo?.recommended_model_file || appDefaults?.recommended_model_file || 'GLM-OCR.Q4_K_M.gguf'} from ${onboardingInfo?.recommended_model_repo || appDefaults?.recommended_model_repo || 'mradermacher/GLM-OCR-GGUF'} as the default path for most users.`,
-        detail: 'When setup is ready, choose a preset, then drop or paste a file and the app starts extracting right away.',
-      },
-    ],
-    [appDefaults, downloadState.message, downloadState.status, modelMissing, onboardingInfo]
-  )
+    return `${selectedPresetConfig?.label || 'Selected'} preset (${selectedPresetConfig?.dpi ?? effectiveSettings?.dpi ?? 300} DPI).`
+  }, [effectiveSettings?.dpi, selectedPreset, selectedPresetConfig])
 
   const selectedJobName = getFileName(selectedJob?.source)
   const downloadProgressPercent = Math.min(
     100,
     Math.max(0, Math.round(downloadState.progress * 100))
   )
-  const shouldAutoDownloadRecommended = useMemo(() => {
-    if (!hasUsableRuntime) return false
-
-    const recommendedProfileId =
-      onboardingInfo?.recommended_model_profile_id ||
-      appDefaults?.recommended_model_profile_id ||
-      ''
-
-    if (!recommendedProfileId) return false
-    if (explicitModelFile) return false
-    if (explicitModelProfileId && explicitModelProfileId !== recommendedProfileId) return false
-    return true
-  }, [
-    explicitModelFile,
-    explicitModelProfileId,
-    hasUsableRuntime,
-    appDefaults?.recommended_model_profile_id,
-    onboardingInfo?.recommended_model_profile_id,
-  ])
+  const setupDownloadActive = isDownloadActive(downloadState.status)
+  const validationStatus = describeValidationStatus(downloadState)
+  const recommendedSetupModel =
+    recommendedSetupInfo ||
+    (defaultModelProfile
+      ? {
+          label: defaultModelProfile.label,
+          family: defaultModelProfile.family,
+          file_name: defaultModelProfile.default_file,
+          mmproj_file: null,
+          notes: defaultModelProfile.notes,
+          availability_error: null,
+          estimated_download_bytes: null,
+        }
+      : null)
+  const setupStorageMode = storageInfo?.mode || onboardingInfo?.storage_mode
+  const setupStoragePath =
+    storageInfo?.models_path || onboardingInfo?.model_storage_path || 'Loading...'
+  const estimatedDiskUse =
+    formatBytes(recommendedSetupInfo?.estimated_download_bytes) ||
+    'Checking size estimate...'
+  const setupStatusLabel = runtimeSetupIssue
+    ? 'Runtime required'
+    : downloadState.status === 'error'
+      ? 'Retry needed'
+      : setupDownloadActive
+        ? downloadState.message?.toLowerCase().includes('resum')
+          ? 'Resuming download'
+          : 'Downloading model'
+        : modelMissing
+          ? 'Model required'
+          : 'Ready'
+  const setupStatusTone =
+    runtimeSetupIssue
+      ? 'warning'
+      : downloadState.status === 'error'
+        ? 'error'
+        : downloadState.status === 'done'
+          ? 'success'
+          : 'info'
+  const setupDownloadText = describeDownloadStatus(downloadState, formatBytes)
+  const setupHelper = setupHelperMessage(downloadState, recommendedSetupInfo)
 
   const missingModelMessage =
     runtimeSetupIssue
       ? runtimeStatus?.summary || 'A usable local OCR runtime was not found.'
       : downloadState.status === 'error'
-      ? downloadState.message ||
-        (shouldAutoDownloadRecommended
-          ? 'First-time setup needs another try in Advanced settings.'
-          : 'Open Advanced settings to install or choose a different supported model.')
-      : shouldAutoDownloadRecommended
-        ? 'First-time setup is downloading the recommended OCR model.'
-        : `${configuredModelLabel} is selected, but it is not ready yet.`
+        ? downloadState.message || 'First-run model setup needs another try.'
+        : setupDownloadActive
+          ? 'First-run setup is still downloading the recommended OCR model.'
+          : `${configuredModelLabel} is selected, but no supported OCR model is ready yet.`
 
   const setupCardTitle =
     runtimeSetupIssue
       ? 'Local OCR runtime needs attention'
       : downloadState.status === 'error'
-      ? shouldAutoDownloadRecommended
         ? 'Recommended model download needs another try'
-        : 'Selected model needs attention'
-      : shouldAutoDownloadRecommended
-        ? 'Downloading the recommended OCR model'
-        : `${configuredModelLabel} is not ready yet`
+        : setupDownloadActive
+          ? 'Downloading the recommended OCR model'
+          : `${configuredModelLabel} is not ready yet`
 
   const setupCardBody =
     runtimeSetupIssue
       ? runtimeStatus?.summary ||
         'No usable local OCR runtime is bundled right now.'
       : downloadState.status === 'error'
-      ? downloadState.message ||
-        (shouldAutoDownloadRecommended
-          ? 'Open Advanced settings to retry the download.'
-          : 'Open Advanced settings to install the selected model or switch back to a curated profile.')
-      : shouldAutoDownloadRecommended
-        ? 'This only happens on first setup or after models are removed.'
-        : 'The current selection is missing locally or is missing its required mmproj companion.'
+        ? downloadState.message || 'Open setup to retry the recommended model download.'
+        : setupDownloadActive
+          ? 'This only happens on first setup or after model files are removed.'
+          : 'Open setup to install the recommended OCR model before starting extraction.'
 
   const topBarStatusItems = [
     {
@@ -485,15 +627,13 @@ function App() {
     { label: 'Finished', value: completedJobs },
     {
       label: 'Preset',
-      value: selectedPreset
-        ? presetOptions.find((preset) => preset.id === selectedPreset)?.label || 'Selected'
-        : 'Advanced custom',
+      value: selectedPresetConfig?.label || (selectedPreset ? 'Selected' : 'Advanced custom'),
       wide: true,
     },
   ]
 
-  const runtimeLabel = effectiveSettings
-    ? runtimeProfileLabel(appDefaults, effectiveSettings.runtime_profile)
+  const runtimeLabel = effectiveRuntimeProfile
+    ? runtimeProfileLabel(appDefaults, effectiveRuntimeProfile)
     : 'Loading...'
   const effectiveRuntimeLabel =
     runtimeStatus?.effective_runtime_label || 'Checking local runtime...'
@@ -510,15 +650,6 @@ function App() {
 
   const handlePastedImageEvent = useEffectEvent((blob: Blob) => {
     void handlePastedImage(blob)
-  })
-
-  const triggerAutoDownload = useEffectEvent(() => {
-    void onDownloadModel(
-      onboardingInfo?.recommended_model_profile_id ||
-        appDefaults?.recommended_model_profile_id ||
-        null,
-      true
-    )
   })
 
   useEffect(() => {
@@ -612,13 +743,13 @@ function App() {
     effectiveSettings,
     effectiveSettings?.model_file,
     effectiveSettings?.model_profile_id,
-    effectiveSettings?.runtime_profile,
+    effectiveRuntimeProfile,
   ])
 
   useEffect(() => {
-    if (!effectiveSettings) return
-    void loadRuntimeStatus(effectiveSettings.runtime_profile)
-  }, [effectiveSettings, effectiveSettings?.runtime_profile])
+    if (!effectiveRuntimeProfile) return
+    void loadRuntimeStatus(effectiveRuntimeProfile)
+  }, [effectiveRuntimeProfile])
 
   useEffect(() => {
     void loadModelCatalog()
@@ -628,6 +759,9 @@ function App() {
     invoke<StorageInfo>('get_storage_info')
       .then((info) => setStorageInfo(info))
       .catch(() => setStorageInfo(null))
+    invoke<RecommendedSetupInfo>('get_recommended_setup_info')
+      .then((info) => setRecommendedSetupInfo(info))
+      .catch(() => setRecommendedSetupInfo(null))
   }, [])
 
   useEffect(() => {
@@ -657,21 +791,6 @@ function App() {
   }, [busy, modelMissing])
 
   useEffect(() => {
-    if (!modelMissing && autoDownloadAttempted) {
-      setAutoDownloadAttempted(false)
-    }
-  }, [autoDownloadAttempted, modelMissing])
-
-  useEffect(() => {
-    if (!modelMissing || autoDownloadAttempted || !shouldAutoDownloadRecommended) return
-
-    setAutoDownloadAttempted(true)
-    setLog('First-time setup is downloading the recommended OCR model.')
-    enqueueToast('Downloading the recommended OCR model for first-time setup.', 'info')
-    triggerAutoDownload()
-  }, [autoDownloadAttempted, modelMissing, shouldAutoDownloadRecommended])
-
-  useEffect(() => {
     if (!selectedJob?.output_path) {
       setMarkdown('')
       return
@@ -682,11 +801,6 @@ function App() {
       .catch(() => setMarkdown('Failed to load markdown.'))
   }, [selectedJob?.output_path])
 
-  useEffect(() => {
-    if (!onboardingOpen || jobs.length === 0) return
-    dismissOnboarding(true)
-  }, [jobs.length, onboardingOpen])
-
   function enqueueToast(message: string, tone: Toast['tone'] = 'info') {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
     setToasts((prev) => [...prev, { id, message, tone }])
@@ -695,15 +809,16 @@ function App() {
     }, 4000)
   }
 
-  function dismissOnboarding(persist: boolean) {
-    setOnboardingOpen(false)
-    if (persist) {
-      writeOnboardingDismissed()
-    }
-  }
-
   function clearCancelRequest(jobId: string) {
     setCancelingJobs((prev) => removeCancelingJob(prev, jobId))
+  }
+
+  function openSetupWizard() {
+    setSetupWizardOpen(true)
+  }
+
+  function closeSetupWizard() {
+    setSetupWizardOpen(false)
   }
 
   async function persistSettings(next: Settings) {
@@ -898,7 +1013,9 @@ function App() {
 
   async function refreshModelStatus() {
     try {
-      const exists = await invoke<boolean>('check_model_exists')
+      const exists = await invoke<boolean>('check_model_exists', {
+        profile: effectiveRuntimeProfile,
+      })
       setModelMissing(!exists)
     } catch {
       setModelMissing(false)
@@ -906,7 +1023,7 @@ function App() {
   }
 
   async function loadRuntimeStatus(profile?: Settings['runtime_profile']) {
-    const nextProfile = profile ?? effectiveSettings?.runtime_profile
+    const nextProfile = profile ?? effectiveRuntimeProfile
     if (!nextProfile) {
       setRuntimeStatus(null)
       return
@@ -932,31 +1049,28 @@ function App() {
   }
 
   async function refreshLocalCatalog() {
-    await Promise.all([loadModelCatalog(), loadRuntimeStatus(effectiveSettings?.runtime_profile)])
+    await Promise.all([loadModelCatalog(), loadRuntimeStatus(effectiveRuntimeProfile ?? undefined)])
   }
 
   async function handlePaths(paths: string[]) {
     if (!paths.length) return
     if (modelMissing) {
-      const downloading = ['starting', 'downloading', 'verifying'].includes(downloadState.status)
+      const downloading = isDownloadActive(downloadState.status)
       const blockedByRuntime = runtimeSetupIssue
+      openSetupWizard()
       setLog(
         blockedByRuntime
           ? runtimeStatus?.summary || 'A usable local OCR runtime is required before extraction can start.'
           : downloading
           ? 'First-time setup is still downloading the OCR model.'
-          : shouldAutoDownloadRecommended
-            ? 'A local OCR model is required before extraction can start.'
-            : `${configuredModelLabel} is selected, but it is not ready yet.`
+          : 'A local OCR model is required before extraction can start.'
       )
       enqueueToast(
         blockedByRuntime
           ? runtimeStatus?.summary || 'Add a local OCR runtime bundle before starting extraction.'
           : downloading
-          ? 'Setup is still downloading the OCR model.'
-          : shouldAutoDownloadRecommended
-            ? 'Open Advanced settings to retry the recommended model download.'
-            : 'Open Advanced settings to install the selected model or choose another curated profile.',
+            ? 'Setup is still downloading the OCR model.'
+            : 'Finish first-run model setup before starting extraction.',
         'error'
       )
       return
@@ -970,8 +1084,10 @@ function App() {
         paths,
         prompt: prompt.trim() || null,
         dpi: effectiveDpi,
+        runOptions: effectiveRunOptions,
       })) as JobResult[]
       setJobs((prev) => mergeJobs(prev, result))
+      setStreams((prev) => applyRunPreferencesToStreams(prev, result, effectiveRunOptions))
       if (result.length) {
         setSelectedId(result[0].job_id)
       }
@@ -992,16 +1108,15 @@ function App() {
 
   async function handlePastedImage(blob: Blob) {
     if (modelMissing) {
-      const downloading = ['starting', 'downloading', 'verifying'].includes(downloadState.status)
+      const downloading = isDownloadActive(downloadState.status)
       const blockedByRuntime = runtimeSetupIssue
+      openSetupWizard()
       enqueueToast(
         blockedByRuntime
           ? runtimeStatus?.summary || 'Add a local OCR runtime bundle before starting extraction.'
           : downloading
           ? 'Wait for the recommended model download to finish before pasting an image.'
-          : shouldAutoDownloadRecommended
-            ? 'Open Advanced settings to finish setting up the recommended model first.'
-            : 'Open Advanced settings to install the selected model or choose another curated profile.',
+            : 'Finish first-run model setup before pasting an image.',
         'info'
       )
       return
@@ -1017,8 +1132,10 @@ function App() {
         mimeType: blob.type || 'image/png',
         prompt: prompt.trim() || null,
         dpi: effectiveDpi,
+        runOptions: effectiveRunOptions,
       })) as JobResult[]
       setJobs((prev) => mergeJobs(prev, result))
+      setStreams((prev) => applyRunPreferencesToStreams(prev, result, effectiveRunOptions))
       if (result.length) {
         setSelectedId(result[0].job_id)
       }
@@ -1244,6 +1361,7 @@ function App() {
     }
 
     setDownloadState({ status: 'starting', progress: 0 })
+    setSetupWizardOpen(true)
 
     try {
       const result = await invoke<{ file_name: string; profile_id?: string | null }>(
@@ -1262,11 +1380,12 @@ function App() {
           : `${result.file_name} downloaded.`,
         'success'
       )
-      if (isAuto) {
-        setLog('First-time setup is complete. Drop, paste, or choose a file to begin.')
-      }
+      setLog('First-time setup is complete. Drop, paste, or choose a file to begin.')
       setModelInput('')
       await refreshLocalCatalog()
+      invoke<RecommendedSetupInfo>('get_recommended_setup_info')
+        .then((info) => setRecommendedSetupInfo(info))
+        .catch(() => {})
       const next = {
         ...effectiveSettings,
         model_profile_id: result.profile_id || null,
@@ -1282,11 +1401,19 @@ function App() {
       console.error(err)
       const message = err instanceof Error ? err.message : String(err)
       setDownloadState((prev) => ({ ...prev, status: 'error', message }))
-      if (isAuto) {
-        setLog('First-time setup could not finish automatically. Open Advanced settings to retry.')
-      }
+      setLog('First-time setup could not finish. Retry the download or open Advanced settings.')
       enqueueToast(message || 'Download failed.', 'error')
     }
+  }
+
+  async function startRecommendedSetup() {
+    await onDownloadModel(
+      recommendedSetupInfo?.profile_id ||
+        onboardingInfo?.recommended_model_profile_id ||
+        appDefaults?.recommended_model_profile_id ||
+        null,
+      true
+    )
   }
 
   return (
@@ -1313,22 +1440,6 @@ function App() {
       }
       importPanel={
         <ImportPanel
-          onboardingOpen={onboardingOpen}
-          onboardingStep={onboardingStep}
-          onboardingSteps={onboardingSteps}
-          onDismissOnboarding={() => dismissOnboarding(true)}
-          onBackOnboarding={() =>
-            setOnboardingStep((current) => Math.max(0, current - 1))
-          }
-          onNextOnboarding={() => {
-            if (onboardingStep === onboardingSteps.length - 1) {
-              dismissOnboarding(true)
-              return
-            }
-            setOnboardingStep((current) =>
-              Math.min(onboardingSteps.length - 1, current + 1)
-            )
-          }}
           showSetupCard={modelMissing || downloadState.status === 'error'}
           runtimeSetupIssue={runtimeSetupIssue}
           setupCardTitle={setupCardTitle}
@@ -1336,7 +1447,9 @@ function App() {
           downloadState={downloadState}
           downloadProgressPercent={downloadProgressPercent}
           formatBytes={formatBytes}
+          onOpenSetupWizard={openSetupWizard}
           presetSummary={presetSummary}
+          presetTradeoff={selectedPresetConfig?.tradeoff ?? null}
           presetOrder={presetOrder}
           presetOptions={presetOptions}
           selectedPreset={selectedPreset}
@@ -1404,6 +1517,55 @@ function App() {
             onSave={handleSettingsSave}
           />
         ) : undefined
+      }
+      overlay={
+        <FirstRunWizard
+          open={setupWizardOpen}
+          statusLabel={setupStatusLabel}
+          statusTone={setupStatusTone}
+          title={
+            runtimeSetupIssue
+              ? 'A local OCR runtime is required before setup can continue'
+              : downloadState.status === 'done'
+                ? 'Recommended OCR model is ready'
+                : 'Install the recommended OCR model to finish first-run setup'
+          }
+          description={
+            runtimeSetupIssue
+              ? runtimeStatus?.summary ||
+                'VisiTexta needs a usable local OCR runtime bundle before it can download and run models.'
+              : downloadState.status === 'error'
+                ? downloadState.message ||
+                  'The recommended download did not finish. Retry when you are ready.'
+                : 'VisiTexta runs OCR locally. The first setup downloads the recommended model once, stores it on this PC, and then reuses it for later jobs.'
+          }
+          storageModeLabel={storageModeLabel(setupStorageMode)}
+          storagePath={setupStoragePath}
+          storageHint={storageModeHint(setupStorageMode)}
+          estimatedDiskUse={estimatedDiskUse}
+          modelLabel={recommendedSetupModel?.label || activeModelTitle}
+          modelFamily={recommendedSetupModel?.family || 'Supported OCR vision model'}
+          modelFile={
+            recommendedSetupModel?.file_name ||
+            onboardingInfo?.recommended_model_file ||
+            appDefaults?.recommended_model_file ||
+            'Loading...'
+          }
+          mmprojFile={recommendedSetupModel?.mmproj_file}
+          validationStatus={validationStatus.label}
+          validationTone={validationStatus.tone}
+          downloadStatus={setupDownloadText}
+          helperMessage={setupHelper}
+          progressPercent={downloadProgressPercent}
+          showProgress={setupDownloadActive || downloadState.status === 'done'}
+          canStart={!runtimeSetupIssue && !setupDownloadActive && downloadState.status !== 'done'}
+          canRetry={!runtimeSetupIssue && downloadState.status === 'error'}
+          isWorking={setupDownloadActive}
+          onStart={startRecommendedSetup}
+          onRetry={startRecommendedSetup}
+          onCancel={closeSetupWizard}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
       }
       toasts={
         <ToastNotifications

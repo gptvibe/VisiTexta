@@ -43,6 +43,36 @@ const OCR_ACTIVE_PAGE_FRACTION: f32 = 0.1;
 
 static ACTIVE_JOBS: Lazy<Mutex<HashMap<String, bool>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Default)]
+pub struct PipelineRunOptions {
+    pub runtime_profile: Option<crate::runtime::RuntimeProfile>,
+    pub max_ocr_dimension: Option<u32>,
+    pub lazy_preview_thumbnails: Option<bool>,
+    pub disable_rich_preview_for_large_jobs: Option<bool>,
+    pub large_job_page_threshold: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EffectivePreviewPolicy {
+    lazy_thumbnails: bool,
+    disable_for_large_jobs: bool,
+    large_job_page_threshold: usize,
+}
+
+impl EffectivePreviewPolicy {
+    fn suppress_rich_preview(self, total_pages: usize) -> bool {
+        self.disable_for_large_jobs && total_pages >= self.large_job_page_threshold.max(1)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EffectivePipelineSettings {
+    threads: u16,
+    runtime_profile: crate::runtime::RuntimeProfile,
+    max_ocr_dimension: u32,
+    preview_policy: EffectivePreviewPolicy,
+}
+
 #[derive(Debug)]
 struct PdfProgressState {
     total_pages: usize,
@@ -160,10 +190,11 @@ pub fn process_batch(
     paths: Vec<String>,
     dpi: u16,
     prompt: Option<String>,
+    run_options: Option<PipelineRunOptions>,
 ) -> Result<Vec<JobResult>> {
     let settings = Settings::load();
     let mut observer = TauriObserver { app };
-    process_batch_with_observer(paths, &settings, dpi, prompt, &mut observer)
+    process_batch_with_observer(paths, &settings, dpi, prompt, run_options, &mut observer)
 }
 
 pub(crate) fn process_batch_with_observer(
@@ -171,11 +202,19 @@ pub(crate) fn process_batch_with_observer(
     settings: &Settings,
     dpi: u16,
     prompt: Option<String>,
+    run_options: Option<PipelineRunOptions>,
     observer: &mut dyn PipelineObserver,
 ) -> Result<Vec<JobResult>> {
     let mut results = Vec::with_capacity(paths.len());
-    let model_path = crate::models::resolve_active_vision_model_path(settings)?;
-    let ocr = LlmOcrEngine::new(model_path, settings.threads, settings.runtime_profile)?;
+    let effective_settings = effective_pipeline_settings(settings, run_options.as_ref());
+    let mut runtime_settings = settings.clone();
+    runtime_settings.runtime_profile = effective_settings.runtime_profile;
+    let model_path = crate::models::resolve_active_vision_model_path(&runtime_settings)?;
+    let ocr = LlmOcrEngine::new(
+        model_path,
+        effective_settings.threads,
+        effective_settings.runtime_profile,
+    )?;
     let effective_prompt = prompt
         .as_deref()
         .map(str::trim)
@@ -219,7 +258,15 @@ pub(crate) fn process_batch_with_observer(
         } else if !is_allowed(&path) {
             fail(job_id, raw, "unsupported file type".into(), observer)
         } else {
-            match process_single(observer, &job_id, &path, &ocr, dpi, effective_prompt) {
+            match process_single(
+                observer,
+                &job_id,
+                &path,
+                &ocr,
+                dpi,
+                effective_prompt,
+                effective_settings,
+            ) {
                 Ok(out) => {
                     emit_complete(observer, &job_id, &out);
                     JobResult {
@@ -335,13 +382,14 @@ fn process_single(
     ocr: &LlmOcrEngine,
     dpi: u16,
     prompt: &str,
+    settings: EffectivePipelineSettings,
 ) -> Result<PathBuf> {
     ensure_not_canceled(observer, job_id, path, 0.0, None, None, None, None)?;
 
     let page_texts = if is_pdf(path) {
-        process_pdf_pages(observer, job_id, path, ocr, dpi, prompt)?
+        process_pdf_pages(observer, job_id, path, ocr, dpi, prompt, settings)?
     } else {
-        process_image_pages(observer, job_id, path, ocr, prompt)?
+        process_image_pages(observer, job_id, path, ocr, prompt, settings)?
     };
 
     ensure_not_canceled(
@@ -431,6 +479,7 @@ fn process_pdf_pages(
     ocr: &LlmOcrEngine,
     dpi: u16,
     prompt: &str,
+    settings: EffectivePipelineSettings,
 ) -> Result<Vec<String>> {
     emit_progress(
         observer,
@@ -654,22 +703,32 @@ fn process_pdf_pages(
                         &page.rendered_path,
                         preprocess_dir.path(),
                         &format!("page-{}", page.page_number),
+                        settings.max_ocr_dimension,
                     )?;
-                    let preview_image = encode_preview_image_data_url(&processed)?;
+                    let preview_image = if settings
+                        .preview_policy
+                        .suppress_rich_preview(page.total_pages)
+                    {
+                        None
+                    } else {
+                        Some(encode_preview_image_data_url(&processed)?)
+                    };
 
                     state.rendered_pages = state.rendered_pages.max(page.page_number);
-                    preview_images[page.page_number - 1] = Some(preview_image.clone());
+                    preview_images[page.page_number - 1] = preview_image.clone();
 
-                    emit_preview(
-                        observer,
-                        job_id,
-                        path,
-                        PreviewKind::Rendered,
-                        page.page_number,
-                        page.total_pages,
-                        &preview_image,
-                        None,
-                    );
+                    if let Some(preview_image) = preview_image.as_deref() {
+                        emit_preview(
+                            observer,
+                            job_id,
+                            path,
+                            PreviewKind::Rendered,
+                            page.page_number,
+                            page.total_pages,
+                            preview_image,
+                            None,
+                        );
+                    }
 
                     emit_progress(
                         observer,
@@ -731,7 +790,7 @@ fn process_pdf_pages(
                     let state = progress_state
                         .as_mut()
                         .ok_or_else(|| PipelineError::Pdf("OCR started before rendering".into()))?;
-                    let preview_image = preview_image_for_page(&preview_images, page_number)?;
+                    let preview_image = preview_image_for_page(&preview_images, page_number);
 
                     state.active_ocr_page = Some(page_number);
 
@@ -750,28 +809,30 @@ fn process_pdf_pages(
                         Some(state.rendered_pages),
                         Some(state.completed_ocr_pages),
                     );
-                    emit_preview(
-                        observer,
-                        job_id,
-                        path,
-                        PreviewKind::Ocr,
-                        page_number,
-                        total_pages,
-                        preview_image,
-                        None,
-                    );
+                    if let Some(preview_image) = preview_image {
+                        emit_preview(
+                            observer,
+                            job_id,
+                            path,
+                            PreviewKind::Ocr,
+                            page_number,
+                            total_pages,
+                            preview_image,
+                            None,
+                        );
 
-                    let page_heading = format!("## Page {}\n\n", page_number);
-                    emit_preview(
-                        observer,
-                        job_id,
-                        path,
-                        PreviewKind::Ocr,
-                        page_number,
-                        total_pages,
-                        preview_image,
-                        Some(page_heading),
-                    );
+                        let page_heading = format!("## Page {}\n\n", page_number);
+                        emit_preview(
+                            observer,
+                            job_id,
+                            path,
+                            PreviewKind::Ocr,
+                            page_number,
+                            total_pages,
+                            preview_image,
+                            Some(page_heading),
+                        );
+                    }
 
                     emit_progress(
                         observer,
@@ -860,9 +921,10 @@ fn process_image_pages(
     path: &Path,
     ocr: &LlmOcrEngine,
     prompt: &str,
+    settings: EffectivePipelineSettings,
 ) -> Result<Vec<String>> {
     let tempdir = storage::create_temp_work_dir("image-preprocess-")?;
-    let out = preprocess_image_to_png(path, tempdir.path(), "image")?;
+    let out = preprocess_image_to_png(path, tempdir.path(), "image", settings.max_ocr_dimension)?;
     let preview_image = encode_preview_image_data_url(&out)?;
 
     emit_progress(
@@ -1036,11 +1098,10 @@ fn collect_page_texts(page_texts: Vec<Option<String>>) -> Result<Vec<String>> {
 fn preview_image_for_page<'a>(
     preview_images: &'a [Option<String>],
     page_number: usize,
-) -> Result<&'a str> {
+) -> Option<&'a str> {
     preview_images
         .get(page_number.saturating_sub(1))
         .and_then(|image| image.as_deref())
-        .ok_or_else(|| PipelineError::Pdf(format!("missing preview image for page {page_number}")))
 }
 
 fn render_progress_message(state: &PdfProgressState, page_number: usize) -> String {
@@ -1142,11 +1203,16 @@ fn has_substantive_ocr_text(markdown: &str) -> bool {
     stripped.trim().chars().any(|c| c.is_alphanumeric())
 }
 
-fn preprocess_image_to_png(input: &Path, tempdir: &Path, stem: &str) -> Result<PathBuf> {
+fn preprocess_image_to_png(
+    input: &Path,
+    tempdir: &Path,
+    stem: &str,
+    max_ocr_dimension: u32,
+) -> Result<PathBuf> {
     let img = image::open(input).map_err(|e| PipelineError::InvalidInput(e.to_string()))?;
     let gray = DynamicImage::ImageLuma8(img.to_luma8());
-    let normalized = if gray.width() > MAX_OCR_DIMENSION || gray.height() > MAX_OCR_DIMENSION {
-        gray.thumbnail(MAX_OCR_DIMENSION, MAX_OCR_DIMENSION)
+    let normalized = if gray.width() > max_ocr_dimension || gray.height() > max_ocr_dimension {
+        gray.thumbnail(max_ocr_dimension, max_ocr_dimension)
     } else {
         gray
     };
@@ -1156,6 +1222,34 @@ fn preprocess_image_to_png(input: &Path, tempdir: &Path, stem: &str) -> Result<P
         .save(&out)
         .map_err(|e| PipelineError::InvalidInput(e.to_string()))?;
     Ok(out)
+}
+
+fn effective_pipeline_settings(
+    settings: &Settings,
+    run_options: Option<&PipelineRunOptions>,
+) -> EffectivePipelineSettings {
+    let preview_policy = EffectivePreviewPolicy {
+        lazy_thumbnails: run_options
+            .and_then(|options| options.lazy_preview_thumbnails)
+            .unwrap_or(settings.lazy_preview_thumbnails),
+        disable_for_large_jobs: run_options
+            .and_then(|options| options.disable_rich_preview_for_large_jobs)
+            .unwrap_or(settings.disable_rich_preview_for_large_jobs),
+        large_job_page_threshold: run_options
+            .and_then(|options| options.large_job_page_threshold)
+            .unwrap_or(settings.large_job_page_threshold),
+    };
+
+    EffectivePipelineSettings {
+        threads: settings.threads,
+        runtime_profile: run_options
+            .and_then(|options| options.runtime_profile)
+            .unwrap_or(settings.runtime_profile),
+        max_ocr_dimension: run_options
+            .and_then(|options| options.max_ocr_dimension)
+            .unwrap_or(settings.max_ocr_dimension.max(800)),
+        preview_policy,
+    }
 }
 
 fn emit_progress(

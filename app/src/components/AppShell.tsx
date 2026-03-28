@@ -8,6 +8,7 @@ type AppShellProps = {
   preview: ReactNode
   footer: ReactNode
   drawer?: ReactNode
+  overlay?: ReactNode
   toasts?: ReactNode
 }
 
@@ -19,6 +20,7 @@ export function AppShell({
   preview,
   footer,
   drawer,
+  overlay,
   toasts,
 }: AppShellProps) {
   return (
@@ -32,6 +34,7 @@ export function AppShell({
       </main>
       {footer}
       {drawer}
+      {overlay}
       {toasts}
     </div>
   )

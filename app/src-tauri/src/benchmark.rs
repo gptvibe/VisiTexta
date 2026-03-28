@@ -405,6 +405,7 @@ fn run_case(
         settings,
         dpi,
         fixture.prompt.clone(),
+        None,
         &mut observer,
     );
     let peak_memory_bytes = memory_sampler.finish();

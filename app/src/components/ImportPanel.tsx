@@ -1,8 +1,7 @@
 import { DropZone } from './DropZone'
-import { FirstRunWizard } from './FirstRunWizard'
 import type { AppDefaults, ExtractionPreset } from '../types'
 
-type PresetKey = 'recommended' | 'quality' | 'faster'
+type PresetKey = 'starter' | 'recommended' | 'quality' | 'faster'
 
 type DownloadState = {
   status: 'idle' | 'starting' | 'downloading' | 'verifying' | 'done' | 'error'
@@ -13,16 +12,6 @@ type DownloadState = {
 }
 
 type ImportPanelProps = {
-  onboardingOpen: boolean
-  onboardingStep: number
-  onboardingSteps: Array<{
-    title: string
-    body: string
-    detail: string
-  }>
-  onDismissOnboarding: () => void
-  onBackOnboarding: () => void
-  onNextOnboarding: () => void
   showSetupCard: boolean
   runtimeSetupIssue: boolean
   setupCardTitle: string
@@ -30,7 +19,9 @@ type ImportPanelProps = {
   downloadState: DownloadState
   downloadProgressPercent: number
   formatBytes: (value?: number | null) => string | null
+  onOpenSetupWizard: () => void
   presetSummary: string
+  presetTradeoff?: string | null
   presetOrder: PresetKey[]
   presetOptions: ExtractionPreset[]
   selectedPreset: PresetKey | null
@@ -56,12 +47,6 @@ type ImportPanelProps = {
 }
 
 export function ImportPanel({
-  onboardingOpen,
-  onboardingStep,
-  onboardingSteps,
-  onDismissOnboarding,
-  onBackOnboarding,
-  onNextOnboarding,
   showSetupCard,
   runtimeSetupIssue,
   setupCardTitle,
@@ -69,7 +54,9 @@ export function ImportPanel({
   downloadState,
   downloadProgressPercent,
   formatBytes,
+  onOpenSetupWizard,
   presetSummary,
+  presetTradeoff,
   presetOrder,
   presetOptions,
   selectedPreset,
@@ -100,15 +87,6 @@ export function ImportPanel({
         Pick the speed and quality you want, then drop files, paste an image, or browse
         for files from your computer.
       </div>
-
-      <FirstRunWizard
-        open={onboardingOpen}
-        step={onboardingStep}
-        steps={onboardingSteps}
-        onBack={onBackOnboarding}
-        onNext={onNextOnboarding}
-        onSkip={onDismissOnboarding}
-      />
 
       {showSetupCard && (
         <section className="setup-card" aria-live="polite">
@@ -143,6 +121,11 @@ export function ImportPanel({
               </div>
             </div>
           )}
+          <div className="advanced-actions">
+            <button className="btn primary" onClick={onOpenSetupWizard}>
+              Open setup
+            </button>
+          </div>
         </section>
       )}
 
@@ -176,6 +159,9 @@ export function ImportPanel({
           <div className="preset-custom-note">
             Advanced custom settings are active for the next run.
           </div>
+        )}
+        {selectedPreset !== null && presetTradeoff && (
+          <div className="preset-tradeoff-note">{presetTradeoff}</div>
         )}
       </section>
 
