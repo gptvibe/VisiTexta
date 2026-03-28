@@ -106,6 +106,17 @@ export type ModelDownloadEvent = {
   message?: string | null
 }
 
+export type Settings = {
+  threads: number
+  dpi: number
+  chunk_size: number
+  auto_open: boolean
+  runtime_profile: RuntimeProfile
+  theme?: string | null
+  model_profile_id?: string | null
+  model_file?: string | null
+}
+
 export type RunnerCompatibility = {
   transient_cli: boolean
   persistent_server: boolean
@@ -124,6 +135,54 @@ export type RuntimeStatus = {
   accelerated_runtime_label?: string | null
   effective_runtime_label: string
   summary: string
+}
+
+export type ThemeOption = {
+  id: string
+  label: string
+}
+
+export type ThemeDefaults = {
+  default_theme: string
+  options: ThemeOption[]
+}
+
+export type RuntimeProfileOption = {
+  id: RuntimeProfile
+  label: string
+  description: string
+}
+
+export type RuntimeProfileDefaults = {
+  default_profile: RuntimeProfile
+  options: RuntimeProfileOption[]
+}
+
+export type PromptDefaults = {
+  default_prompt: string
+  system_prompt: string
+  placeholder: string
+  hint: string
+}
+
+export type ExtractionPreset = {
+  id: string
+  label: string
+  dpi: number
+  description: string
+  meta: string
+}
+
+export type AppDefaults = {
+  settings: Settings
+  theme: ThemeDefaults
+  runtime_profiles: RuntimeProfileDefaults
+  prompt: PromptDefaults
+  extraction_presets: ExtractionPreset[]
+  recommended_model_profile_id: string
+  recommended_model_label: string
+  recommended_model_file: string
+  recommended_model_repo: string
 }
 
 export type ModelProfile = {
@@ -174,4 +233,12 @@ export type StorageInfo = {
   temp_path: string
   pasted_inputs_path: string
   outputs_description: string
+}
+
+export type OnboardingInfo = {
+  model_storage_path: string
+  recommended_model_profile_id: string
+  recommended_model_label: string
+  recommended_model_file: string
+  recommended_model_repo: string
 }

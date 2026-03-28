@@ -1,22 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import type {
+  AppDefaults,
   LocalModelInfo,
   ModelCatalog,
   ModelProfile,
   RuntimeProfile,
   RuntimeStatus,
+  Settings,
   StorageInfo,
 } from '../types'
-
-type Settings = {
-  threads: number
-  dpi: number
-  auto_open: boolean
-  runtime_profile: RuntimeProfile
-  theme?: string | null
-  model_profile_id?: string | null
-  model_file?: string | null
-}
 
 type ModelDownloadState = {
   status: 'idle' | 'starting' | 'downloading' | 'verifying' | 'done' | 'error'
@@ -30,6 +22,7 @@ type ModelDownloadState = {
 type SettingsDrawerProps = {
   open: boolean
   settings: Settings
+  appDefaults: AppDefaults | null
   modelCatalog: ModelCatalog | null
   runtimeStatus?: RuntimeStatus | null
   storageInfo?: StorageInfo | null
@@ -77,15 +70,11 @@ function describeLocalOption(model: LocalModelInfo) {
   return `${supportLabel(model)}: ${model.label}`
 }
 
-function describeRuntimeProfile(profile: RuntimeProfile) {
-  switch (profile) {
-    case 'auto':
-      return 'Auto prefers a bundled accelerated runtime when this PC appears compatible, then falls back to the CPU-compatible path.'
-    case 'accelerated_if_available':
-      return 'Accelerated if available tries bundled acceleration first, then falls back cleanly if it is missing or incompatible.'
-    default:
-      return 'CPU compatible is the safe default and uses the widest-compatibility local runtime build.'
-  }
+function describeRuntimeProfile(
+  options: AppDefaults['runtime_profiles']['options'],
+  profile: RuntimeProfile
+) {
+  return options.find((option) => option.id === profile)?.description ?? ''
 }
 
 function renderProfileCard(
@@ -143,6 +132,7 @@ function renderProfileCard(
 export function SettingsDrawer({
   open,
   settings,
+  appDefaults,
   modelCatalog,
   runtimeStatus,
   storageInfo,
@@ -156,6 +146,8 @@ export function SettingsDrawer({
   onSave,
 }: SettingsDrawerProps) {
   const [draft, setDraft] = useState(settings)
+  const runtimeProfileOptions = appDefaults?.runtime_profiles.options ?? []
+  const themeOptions = appDefaults?.theme.options ?? []
 
   useEffect(() => {
     setDraft(settings)
@@ -279,6 +271,21 @@ export function SettingsDrawer({
             />
             <span>Auto-open output folder</span>
           </label>
+          <label className="field">
+            <span>Theme</span>
+            <select
+              value={draft.theme || appDefaults?.theme.default_theme || 'system'}
+              onChange={(event) =>
+                setDraft({ ...draft, theme: event.target.value || null })
+              }
+            >
+              {themeOptions.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
 
           <div className="drawer-section">
             <div className="section-title">Runtime profile</div>
@@ -293,12 +300,16 @@ export function SettingsDrawer({
                   })
                 }
               >
-                <option value="auto">Auto</option>
-                <option value="cpu_compatible">CPU compatible</option>
-                <option value="accelerated_if_available">Accelerated if available</option>
+                {runtimeProfileOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </label>
-            <div className="field-note">{describeRuntimeProfile(draft.runtime_profile)}</div>
+            <div className="field-note">
+              {describeRuntimeProfile(runtimeProfileOptions, draft.runtime_profile)}
+            </div>
             <div className="field-note">
               Acceleration changes speed only. OCR semantics stay tied to the same model,
               prompt, and preprocessing path.

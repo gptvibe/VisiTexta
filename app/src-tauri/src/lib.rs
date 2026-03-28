@@ -1,5 +1,6 @@
 #[cfg(debug_assertions)]
 pub mod benchmark;
+mod defaults;
 mod errors;
 mod events;
 mod formatting;
@@ -63,6 +64,7 @@ pub fn run() {
             enqueue_pasted_image,
             cancel_job,
             get_settings,
+            get_app_defaults,
             get_runtime_status,
             get_onboarding_info,
             get_storage_info,
@@ -223,6 +225,11 @@ fn save_markdown_as(src_path: String, dest_path: String) -> Result<(), String> {
 #[tauri::command]
 fn get_settings() -> Settings {
     Settings::load()
+}
+
+#[tauri::command]
+fn get_app_defaults() -> defaults::AppDefaults {
+    defaults::app_defaults()
 }
 
 #[tauri::command]

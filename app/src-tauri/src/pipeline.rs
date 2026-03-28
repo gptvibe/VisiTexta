@@ -1,3 +1,4 @@
+use crate::defaults::DEFAULT_PROMPT_TEXT;
 use crate::errors::{PipelineError, Result};
 use crate::events::{
     AppEvent, CompletedEvent, ErrorEvent, JobStatus, PreviewEvent, PreviewKind, ProgressEvent,
@@ -34,7 +35,6 @@ pub struct JobResult {
 }
 
 const ALLOWED_EXT: &[&str] = &["png", "jpg", "jpeg", "pdf"];
-const DEFAULT_PROMPT: &str = "Extract all text from the image and return it as markdown.";
 const MAX_OCR_DIMENSION: u32 = 1600;
 const INITIAL_PROCESS_PROGRESS: f32 = 0.05;
 const PDF_RENDER_PROGRESS_WEIGHT: f32 = 0.20;
@@ -180,7 +180,7 @@ pub(crate) fn process_batch_with_observer(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or(DEFAULT_PROMPT);
+        .unwrap_or(DEFAULT_PROMPT_TEXT);
 
     for raw in paths {
         let path = PathBuf::from(&raw);
@@ -376,7 +376,7 @@ fn process_single(
         ));
     }
 
-    let markdown = if prompt != DEFAULT_PROMPT {
+    let markdown = if prompt != DEFAULT_PROMPT_TEXT {
         format!("<!-- prompt: {} -->\n\n{}", prompt, body)
     } else {
         body

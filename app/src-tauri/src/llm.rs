@@ -1,3 +1,4 @@
+use crate::defaults::{DEFAULT_PROMPT_TEXT, DEFAULT_SYSTEM_PROMPT_TEXT};
 use crate::errors::{PipelineError, Result};
 use crate::events::RunnerMode;
 use crate::runtime::{RuntimeBackend, RuntimeExecutable, RuntimeExecutionPlan, RuntimeProfile};
@@ -60,7 +61,7 @@ const FILTERED_INSTRUCTION_ECHO_PHRASES: &[&str] = &[
     "no commentary no repeated instructions",
     "you are an ocr engine",
     "read all visible text from the provided image",
-    "extract all text from the image and return it as markdown",
+    DEFAULT_PROMPT_TEXT,
     "return only markdown output and no extra explanation",
     "only the markdown output and no extra explanation",
 ];
@@ -972,11 +973,11 @@ fn build_ocr_prompt(prompt: &str) -> String {
     let trimmed = prompt.trim();
 
     if trimmed.is_empty() || is_default_ocr_prompt(trimmed) {
-        return "Transcribe the visible document text as markdown.".to_string();
+        return DEFAULT_SYSTEM_PROMPT_TEXT.to_string();
     }
 
     format!(
-        "Transcribe the visible document text as markdown.\nFollow any additional OCR preferences from the user when possible.\nAdditional OCR preferences: {}",
+        "{DEFAULT_SYSTEM_PROMPT_TEXT}\nFollow any additional OCR preferences from the user when possible.\nAdditional OCR preferences: {}",
         trimmed
     )
 }

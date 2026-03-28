@@ -1,3 +1,4 @@
+use crate::defaults::DEFAULT_PROMPT_TEXT;
 use crate::events::{
     CompletedEvent, ErrorEvent, PreviewEvent, ProgressEvent, RunnerEvent, RunnerStage,
 };
@@ -23,7 +24,6 @@ use uuid::Uuid;
 
 const DEFAULT_OUTPUT_SUBDIR: &str = "out";
 const DEFAULT_FIXTURE_SUBDIR: &str = "fixtures";
-const DEFAULT_PROMPT: &str = "Extract all text from the image and return it as markdown.";
 const LATEST_REPORT_FILE: &str = "latest.json";
 const MEMORY_SAMPLE_INTERVAL_MS: u64 = 75;
 
@@ -241,7 +241,7 @@ where
             model_file: settings.model_file.clone(),
             threads: settings.threads,
             default_dpi: settings.dpi,
-            default_prompt: DEFAULT_PROMPT.into(),
+            default_prompt: DEFAULT_PROMPT_TEXT.into(),
             debug_assertions: cfg!(debug_assertions),
         },
         summary,

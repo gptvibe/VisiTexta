@@ -2,36 +2,31 @@ import { useEffect, useEffectEvent, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { DropZone } from './components/DropZone'
-import { FileQueue } from './components/FileQueue'
-import { MarkdownPreview } from './components/MarkdownPreview'
+import { AppShell } from './components/AppShell'
+import { ImportPanel } from './components/ImportPanel'
+import { JobQueue } from './components/JobQueue'
+import { PreviewWorkspace } from './components/PreviewWorkspace'
 import { SettingsDrawer } from './components/SettingsDrawer'
+import { TopBar } from './components/TopBar'
 import { ToastNotifications, type Toast } from './components/ToastNotifications'
 import type {
+  AppDefaults,
   AppEvent,
+  ExtractionPreset,
   JobPreviewPage,
   JobResult,
   JobStatus,
   JobStreamState,
   ModelCatalog,
   ModelDownloadEvent,
-  RuntimeProfile,
   RuntimeStatus,
   RunnerMode,
   RunnerStage,
+  Settings,
   StorageInfo,
+  OnboardingInfo,
 } from './types'
 import './App.css'
-
-type Settings = {
-  threads: number
-  dpi: number
-  auto_open: boolean
-  runtime_profile: RuntimeProfile
-  theme?: string | null
-  model_profile_id?: string | null
-  model_file?: string | null
-}
 
 type ModelDownloadState = {
   status: 'idle' | 'starting' | 'downloading' | 'verifying' | 'done' | 'error'
@@ -42,64 +37,16 @@ type ModelDownloadState = {
   total_bytes?: number | null
 }
 
-type OnboardingInfo = {
-  model_storage_path: string
-  recommended_model_profile_id: string
-  recommended_model_label: string
-  recommended_model_file: string
-  recommended_model_repo: string
-}
-
 type PresetKey = 'recommended' | 'quality' | 'faster'
-
-type Preset = {
-  label: string
-  dpi: number
-  description: string
-  meta: string
-}
-
-const defaultSettings: Settings = {
-  threads: 4,
-  dpi: 300,
-  auto_open: false,
-  runtime_profile: 'cpu_compatible',
-  theme: 'dark',
-  model_profile_id: null,
-  model_file: null,
-}
+type ThemeChoice = 'light' | 'dark' | 'system'
+type ResolvedTheme = 'light' | 'dark'
 
 const defaultDownloadState: ModelDownloadState = {
   status: 'idle',
   progress: 0,
 }
 
-const DEFAULT_MODEL_PROFILE_ID = 'glm-ocr'
-const DEFAULT_PROMPT = 'Extract all text from the image and return it as markdown.'
 const ONBOARDING_STORAGE_KEY = 'visitexta.onboarding.dismissed'
-
-const PRESETS: Record<PresetKey, Preset> = {
-  recommended: {
-    label: 'Recommended',
-    dpi: 300,
-    description: 'Best default for most screenshots, scans, and PDFs.',
-    meta: 'Balanced speed and readability',
-  },
-  quality: {
-    label: 'Higher quality',
-    dpi: 360,
-    description: 'Sharper rendering for small print and dense documents.',
-    meta: 'Slower, but easier on tiny text',
-  },
-  faster: {
-    label: 'Faster',
-    dpi: 220,
-    description: 'Quickest option for clean documents and large batches.',
-    meta: 'Fastest turnaround',
-  },
-}
-
-const PRESET_ORDER: PresetKey[] = ['recommended', 'quality', 'faster']
 
 function isActiveStatus(status: JobStatus) {
   return !['Done', 'Failed', 'Canceled'].includes(status)
@@ -162,9 +109,9 @@ function createEmptyStreamState(): JobStreamState {
   }
 }
 
-function getPresetForDpi(dpi: number): PresetKey | null {
-  const match = PRESET_ORDER.find((key) => PRESETS[key].dpi === dpi)
-  return match ?? null
+function getPresetForDpi(presets: ExtractionPreset[], dpi: number): PresetKey | null {
+  const match = presets.find((preset) => preset.dpi === dpi)
+  return (match?.id as PresetKey | undefined) ?? null
 }
 
 function getFileName(path?: string | null) {
@@ -180,15 +127,40 @@ function formatBytes(value?: number | null) {
   return `${(mb / 1024).toFixed(2)} GB`
 }
 
-function runtimeProfileLabel(profile: RuntimeProfile) {
-  switch (profile) {
-    case 'auto':
-      return 'Auto'
-    case 'accelerated_if_available':
-      return 'Accelerated if available'
-    default:
-      return 'CPU compatible'
+function normalizeThemeChoice(value?: string | null): ThemeChoice {
+  if (value === 'light' || value === 'dark' || value === 'system') {
+    return value
   }
+  return 'system'
+}
+
+function readSystemTheme(): ResolvedTheme {
+  if (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-color-scheme: dark)').matches
+  ) {
+    return 'dark'
+  }
+  return 'light'
+}
+
+function resolveTheme(choice: ThemeChoice, systemTheme: ResolvedTheme): ResolvedTheme {
+  return choice === 'system' ? systemTheme : choice
+}
+
+function themeLabel(choice: ThemeChoice, resolvedTheme: ResolvedTheme) {
+  if (choice === 'system') {
+    return `System (${resolvedTheme === 'dark' ? 'Dark' : 'Light'})`
+  }
+  return choice === 'dark' ? 'Dark' : 'Light'
+}
+
+function runtimeProfileLabel(appDefaults: AppDefaults | null, profile: Settings['runtime_profile']) {
+  return (
+    appDefaults?.runtime_profiles.options.find((option) => option.id === profile)?.label ??
+    profile
+  )
 }
 
 function buildRunnerMessage(
@@ -275,6 +247,7 @@ function blobToDataUrl(blob: Blob) {
 }
 
 function App() {
+  const [appDefaults, setAppDefaults] = useState<AppDefaults | null>(null)
   const [busy, setBusy] = useState(false)
   const [jobs, setJobs] = useState<JobResult[]>([])
   const [streams, setStreams] = useState<Record<string, JobStreamState>>({})
@@ -282,7 +255,7 @@ function App() {
   const [markdown, setMarkdown] = useState('')
   const [log, setLog] = useState('Choose a preset, then drop, paste, or pick a file to begin.')
   const [modelMissing, setModelMissing] = useState(false)
-  const [settings, setSettings] = useState<Settings>(defaultSettings)
+  const [settings, setSettings] = useState<Settings | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null)
@@ -293,13 +266,21 @@ function App() {
   const [prompt, setPrompt] = useState('')
   const [autoDownloadAttempted, setAutoDownloadAttempted] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [selectedPreset, setSelectedPreset] = useState<PresetKey | null>(
-    getPresetForDpi(defaultSettings.dpi)
-  )
+  const [selectedPreset, setSelectedPreset] = useState<PresetKey | null>(null)
   const [onboardingInfo, setOnboardingInfo] = useState<OnboardingInfo | null>(null)
   const [onboardingOpen, setOnboardingOpen] = useState(!readOnboardingDismissed())
   const [onboardingStep, setOnboardingStep] = useState(0)
   const [cancelingJobs, setCancelingJobs] = useState<Record<string, boolean>>({})
+  const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() => readSystemTheme())
+  const effectiveSettings = settings ?? appDefaults?.settings ?? null
+  const drawerSettings = effectiveSettings ?? appDefaults?.settings ?? null
+  const presetOptions = appDefaults?.extraction_presets ?? []
+  const presetOrder = presetOptions.map((preset) => preset.id as PresetKey)
+  const selectedThemeChoice = normalizeThemeChoice(
+    effectiveSettings?.theme ?? appDefaults?.theme.default_theme
+  )
+  const resolvedTheme = resolveTheme(selectedThemeChoice, systemTheme)
+  const currentThemeLabel = themeLabel(selectedThemeChoice, resolvedTheme)
 
   const selectedJob = useMemo(
     () => jobs.find((job) => job.job_id === selectedId) || null,
@@ -320,18 +301,20 @@ function App() {
   }, [modelCatalog])
 
   const selectedProfile = useMemo(() => {
-    if (!modelCatalog || !settings.model_profile_id) return null
+    if (!modelCatalog || !effectiveSettings?.model_profile_id) return null
     return (
-      modelCatalog.profiles.find((profile) => profile.id === settings.model_profile_id) || null
+      modelCatalog.profiles.find((profile) => profile.id === effectiveSettings.model_profile_id) ||
+      null
     )
-  }, [modelCatalog, settings.model_profile_id])
+  }, [effectiveSettings?.model_profile_id, modelCatalog])
 
   const selectedLocalModel = useMemo(() => {
-    if (!modelCatalog || !settings.model_file) return null
+    if (!modelCatalog || !effectiveSettings?.model_file) return null
     return (
-      modelCatalog.local_models.find((model) => model.file_name === settings.model_file) || null
+      modelCatalog.local_models.find((model) => model.file_name === effectiveSettings.model_file) ||
+      null
     )
-  }, [modelCatalog, settings.model_file])
+  }, [effectiveSettings?.model_file, modelCatalog])
 
   const activeModelTitle =
     selectedLocalModel?.label ||
@@ -354,8 +337,8 @@ function App() {
         : 'Tested'
       : 'Recommended'
 
-  const explicitModelFile = settings.model_file?.trim() || ''
-  const explicitModelProfileId = settings.model_profile_id?.trim() || ''
+  const explicitModelFile = effectiveSettings?.model_file?.trim() || ''
+  const explicitModelProfileId = effectiveSettings?.model_profile_id?.trim() || ''
   const configuredModelLabel =
     explicitModelFile || selectedProfile?.label || activeModelTitle || 'Selected OCR model'
 
@@ -378,8 +361,11 @@ function App() {
   }, [markdown, selectedJob?.status, selectedStream?.streamed_markdown])
 
   const effectiveDpi = useMemo(
-    () => (selectedPreset ? PRESETS[selectedPreset].dpi : settings.dpi),
-    [selectedPreset, settings.dpi]
+    () =>
+      selectedPreset
+        ? (presetOptions.find((preset) => preset.id === selectedPreset)?.dpi ?? effectiveSettings?.dpi ?? 300)
+        : effectiveSettings?.dpi ?? 300,
+    [effectiveSettings?.dpi, presetOptions, selectedPreset]
   )
 
   const hasUsableRuntime = runtimeStatus?.usable_runtime ?? true
@@ -387,10 +373,11 @@ function App() {
 
   const presetSummary = useMemo(() => {
     if (!selectedPreset) {
-      return `Using advanced custom DPI (${settings.dpi}).`
+      return `Using advanced custom DPI (${effectiveSettings?.dpi ?? 300}).`
     }
-    return `${PRESETS[selectedPreset].label} preset (${PRESETS[selectedPreset].dpi} DPI).`
-  }, [selectedPreset, settings.dpi])
+    const preset = presetOptions.find((option) => option.id === selectedPreset)
+    return `${preset?.label || 'Selected'} preset (${preset?.dpi ?? effectiveSettings?.dpi ?? 300} DPI).`
+  }, [effectiveSettings?.dpi, presetOptions, selectedPreset])
 
   const onboardingSteps = useMemo(
     () => [
@@ -417,14 +404,13 @@ function App() {
       },
       {
         title: 'Start with the recommended model',
-        body: `${onboardingInfo?.recommended_model_label || 'GLM-OCR (Q4_K_M)'} uses ${onboardingInfo?.recommended_model_file || 'GLM-OCR.Q4_K_M.gguf'} from ${onboardingInfo?.recommended_model_repo || 'mradermacher/GLM-OCR-GGUF'} as the default path for most users.`,
+        body: `${onboardingInfo?.recommended_model_label || appDefaults?.recommended_model_label || 'GLM-OCR (Q4_K_M)'} uses ${onboardingInfo?.recommended_model_file || appDefaults?.recommended_model_file || 'GLM-OCR.Q4_K_M.gguf'} from ${onboardingInfo?.recommended_model_repo || appDefaults?.recommended_model_repo || 'mradermacher/GLM-OCR-GGUF'} as the default path for most users.`,
         detail: 'When setup is ready, choose a preset, then drop or paste a file and the app starts extracting right away.',
       },
     ],
-    [downloadState.message, downloadState.status, modelMissing, onboardingInfo]
+    [appDefaults, downloadState.message, downloadState.status, modelMissing, onboardingInfo]
   )
 
-  const onboardingStepData = onboardingSteps[onboardingStep] ?? onboardingSteps[0]
   const selectedJobName = getFileName(selectedJob?.source)
   const downloadProgressPercent = Math.min(
     100,
@@ -434,8 +420,11 @@ function App() {
     if (!hasUsableRuntime) return false
 
     const recommendedProfileId =
-      onboardingInfo?.recommended_model_profile_id || DEFAULT_MODEL_PROFILE_ID
+      onboardingInfo?.recommended_model_profile_id ||
+      appDefaults?.recommended_model_profile_id ||
+      ''
 
+    if (!recommendedProfileId) return false
     if (explicitModelFile) return false
     if (explicitModelProfileId && explicitModelProfileId !== recommendedProfileId) return false
     return true
@@ -443,6 +432,7 @@ function App() {
     explicitModelFile,
     explicitModelProfileId,
     hasUsableRuntime,
+    appDefaults?.recommended_model_profile_id,
     onboardingInfo?.recommended_model_profile_id,
   ])
 
@@ -482,6 +472,34 @@ function App() {
         ? 'This only happens on first setup or after models are removed.'
         : 'The current selection is missing locally or is missing its required mmproj companion.'
 
+  const topBarStatusItems = [
+    {
+      label: 'Setup',
+      value: modelMissing
+        ? downloadState.status === 'error'
+          ? 'Needs attention'
+          : 'First run'
+        : 'Ready',
+    },
+    { label: 'In progress', value: activeJobs },
+    { label: 'Finished', value: completedJobs },
+    {
+      label: 'Preset',
+      value: selectedPreset
+        ? presetOptions.find((preset) => preset.id === selectedPreset)?.label || 'Selected'
+        : 'Advanced custom',
+      wide: true,
+    },
+  ]
+
+  const runtimeLabel = effectiveSettings
+    ? runtimeProfileLabel(appDefaults, effectiveSettings.runtime_profile)
+    : 'Loading...'
+  const effectiveRuntimeLabel =
+    runtimeStatus?.effective_runtime_label || 'Checking local runtime...'
+  const modelStorageLabel =
+    storageInfo?.models_path || onboardingInfo?.model_storage_path || 'Loading...'
+
   const handlePathsEvent = useEffectEvent((paths: string[]) => {
     void handlePaths(paths)
   })
@@ -496,10 +514,34 @@ function App() {
 
   const triggerAutoDownload = useEffectEvent(() => {
     void onDownloadModel(
-      onboardingInfo?.recommended_model_profile_id || DEFAULT_MODEL_PROFILE_ID,
+      onboardingInfo?.recommended_model_profile_id ||
+        appDefaults?.recommended_model_profile_id ||
+        null,
       true
     )
   })
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+
+    const query = window.matchMedia('(prefers-color-scheme: dark)')
+    const updateTheme = () => {
+      setSystemTheme(query.matches ? 'dark' : 'light')
+    }
+
+    updateTheme()
+    query.addEventListener('change', updateTheme)
+    return () => {
+      query.removeEventListener('change', updateTheme)
+    }
+  }, [])
+
+  useEffect(() => {
+    const root = document.documentElement
+    root.dataset.theme = resolvedTheme
+    root.dataset.themePreference = selectedThemeChoice
+    root.style.colorScheme = resolvedTheme
+  }, [resolvedTheme, selectedThemeChoice])
 
   useEffect(() => {
     const dropListener = listen<string[]>('tauri://file-drop', async (event) => {
@@ -545,24 +587,38 @@ function App() {
   }, [])
 
   useEffect(() => {
-    invoke<Settings>('get_settings')
-      .then((result) => {
-        setSettings(result)
-        setSelectedPreset(getPresetForDpi(result.dpi))
+    Promise.all([
+      invoke<AppDefaults>('get_app_defaults'),
+      invoke<Settings>('get_settings').catch(() => null),
+    ])
+      .then(([defaults, result]) => {
+        const nextSettings = result ?? defaults.settings
+        setAppDefaults(defaults)
+        setSettings(nextSettings)
+        setSelectedPreset(getPresetForDpi(defaults.extraction_presets, nextSettings.dpi))
       })
-      .catch(() => {
-        setSettings(defaultSettings)
-        setSelectedPreset(getPresetForDpi(defaultSettings.dpi))
+      .catch((err) => {
+        console.error(err)
+        setAppDefaults(null)
+        setSettings(null)
+        setSelectedPreset(null)
       })
   }, [])
 
   useEffect(() => {
+    if (!effectiveSettings) return
     void refreshModelStatus()
-  }, [settings.model_file, settings.model_profile_id, settings.runtime_profile])
+  }, [
+    effectiveSettings,
+    effectiveSettings?.model_file,
+    effectiveSettings?.model_profile_id,
+    effectiveSettings?.runtime_profile,
+  ])
 
   useEffect(() => {
-    void loadRuntimeStatus(settings.runtime_profile)
-  }, [settings.runtime_profile])
+    if (!effectiveSettings) return
+    void loadRuntimeStatus(effectiveSettings.runtime_profile)
+  }, [effectiveSettings, effectiveSettings?.runtime_profile])
 
   useEffect(() => {
     void loadModelCatalog()
@@ -648,6 +704,11 @@ function App() {
 
   function clearCancelRequest(jobId: string) {
     setCancelingJobs((prev) => removeCancelingJob(prev, jobId))
+  }
+
+  async function persistSettings(next: Settings) {
+    setSettings(next)
+    await invoke('set_settings', { settings: next })
   }
 
   function upsertJob(update: Partial<JobResult> & { job_id: string }) {
@@ -844,9 +905,15 @@ function App() {
     }
   }
 
-  async function loadRuntimeStatus(profile: RuntimeProfile = settings.runtime_profile) {
+  async function loadRuntimeStatus(profile?: Settings['runtime_profile']) {
+    const nextProfile = profile ?? effectiveSettings?.runtime_profile
+    if (!nextProfile) {
+      setRuntimeStatus(null)
+      return
+    }
+
     try {
-      const status = await invoke<RuntimeStatus>('get_runtime_status', { profile })
+      const status = await invoke<RuntimeStatus>('get_runtime_status', { profile: nextProfile })
       setRuntimeStatus(status)
     } catch (err) {
       console.error(err)
@@ -865,7 +932,7 @@ function App() {
   }
 
   async function refreshLocalCatalog() {
-    await Promise.all([loadModelCatalog(), loadRuntimeStatus(settings.runtime_profile)])
+    await Promise.all([loadModelCatalog(), loadRuntimeStatus(effectiveSettings?.runtime_profile)])
   }
 
   async function handlePaths(paths: string[]) {
@@ -1123,10 +1190,10 @@ function App() {
 
   async function handleSettingsSave(next: Settings) {
     setSettings(next)
-    setSelectedPreset(getPresetForDpi(next.dpi))
+    setSelectedPreset(getPresetForDpi(presetOptions, next.dpi))
     setSettingsOpen(false)
     try {
-      await invoke('set_settings', { settings: next })
+      await persistSettings(next)
       enqueueToast('Settings saved.', 'success')
       await Promise.all([
         refreshModelStatus(),
@@ -1139,7 +1206,36 @@ function App() {
     }
   }
 
+  async function handleThemeChange(nextTheme: ThemeChoice) {
+    if (!effectiveSettings) return
+
+    const previous = effectiveSettings
+    const next = {
+      ...effectiveSettings,
+      theme: nextTheme,
+    }
+
+    setSettings(next)
+    try {
+      await persistSettings(next)
+    } catch (err) {
+      console.error(err)
+      setSettings(previous)
+      enqueueToast('Failed to update theme.', 'error')
+    }
+  }
+
+  async function handleThemeToggle() {
+    const nextTheme = resolvedTheme === 'dark' ? 'light' : 'dark'
+    await handleThemeChange(nextTheme)
+  }
+
   async function onDownloadModel(targetOverride?: string | null, isAuto = false) {
+    if (!effectiveSettings) {
+      enqueueToast('App defaults are still loading.', 'info')
+      return
+    }
+
     const targetSource = typeof targetOverride === 'string' ? targetOverride : modelInput
     const target = targetSource.trim()
     if (!target) {
@@ -1172,13 +1268,13 @@ function App() {
       setModelInput('')
       await refreshLocalCatalog()
       const next = {
-        ...settings,
+        ...effectiveSettings,
         model_profile_id: result.profile_id || null,
         model_file: result.file_name,
       }
       setSettings(next)
       if (!selectedPreset) {
-        setSelectedPreset(getPresetForDpi(next.dpi))
+        setSelectedPreset(getPresetForDpi(presetOptions, next.dpi))
       }
       await invoke('set_settings', { settings: next })
       setModelMissing(false)
@@ -1194,294 +1290,130 @@ function App() {
   }
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <div className="brand-block">
-          <div className="subtitle">Offline OCR</div>
-          <div className="title-row">
-            <div className="title">VisiTexta</div>
-            <div className="mode-pill">Local only</div>
-          </div>
-          <div className="headline">
-            Turn PDFs, scans, and screenshots into markdown on this PC. Choose a preset,
-            then drop, paste, or pick a file to start.
-          </div>
-        </div>
-        <div className="topbar-actions">
-          <div className="telemetry-card">
-            <span>Setup</span>
-            <strong>
-              {modelMissing
-                ? downloadState.status === 'error'
-                  ? 'Needs attention'
-                  : 'First run'
-                : 'Ready'}
-            </strong>
-          </div>
-          <div className="telemetry-card">
-            <span>In progress</span>
-            <strong>{activeJobs}</strong>
-          </div>
-          <div className="telemetry-card">
-            <span>Finished</span>
-            <strong>{completedJobs}</strong>
-          </div>
-          <div className="telemetry-card wide">
-            <span>Preset</span>
-            <strong>{selectedPreset ? PRESETS[selectedPreset].label : 'Advanced custom'}</strong>
-          </div>
-        </div>
-      </header>
-
-      {(modelMissing || downloadState.status === 'error') && (
-        <div className="warning">{missingModelMessage}</div>
-      )}
-
-      <main className="workspace">
-        <section className="panel queue-panel">
-          <FileQueue
-            jobs={jobs}
-            selectedId={selectedId}
-            streams={streams}
-            onSelect={(id) => setSelectedId(id)}
+    <AppShell
+      topBar={
+        <TopBar
+          statusItems={topBarStatusItems}
+          themeLabel={currentThemeLabel}
+          onToggleTheme={handleThemeToggle}
+        />
+      }
+      warning={
+        modelMissing || downloadState.status === 'error' ? (
+          <div className="warning">{missingModelMessage}</div>
+        ) : undefined
+      }
+      queue={
+        <JobQueue
+          jobs={jobs}
+          selectedId={selectedId}
+          streams={streams}
+          onSelect={setSelectedId}
+        />
+      }
+      importPanel={
+        <ImportPanel
+          onboardingOpen={onboardingOpen}
+          onboardingStep={onboardingStep}
+          onboardingSteps={onboardingSteps}
+          onDismissOnboarding={() => dismissOnboarding(true)}
+          onBackOnboarding={() =>
+            setOnboardingStep((current) => Math.max(0, current - 1))
+          }
+          onNextOnboarding={() => {
+            if (onboardingStep === onboardingSteps.length - 1) {
+              dismissOnboarding(true)
+              return
+            }
+            setOnboardingStep((current) =>
+              Math.min(onboardingSteps.length - 1, current + 1)
+            )
+          }}
+          showSetupCard={modelMissing || downloadState.status === 'error'}
+          runtimeSetupIssue={runtimeSetupIssue}
+          setupCardTitle={setupCardTitle}
+          setupCardBody={setupCardBody}
+          downloadState={downloadState}
+          downloadProgressPercent={downloadProgressPercent}
+          formatBytes={formatBytes}
+          presetSummary={presetSummary}
+          presetOrder={presetOrder}
+          presetOptions={presetOptions}
+          selectedPreset={selectedPreset}
+          onSelectPreset={(preset, label) => {
+            setSelectedPreset(preset)
+            setLog(`${label} preset selected.`)
+          }}
+          busy={busy}
+          modelMissing={modelMissing}
+          onBrowseFiles={onBrowseFiles}
+          onPasteImage={onPasteImage}
+          onFiles={handlePaths}
+          advancedOpen={advancedOpen}
+          onToggleAdvanced={() => setAdvancedOpen((current) => !current)}
+          appDefaults={appDefaults}
+          prompt={prompt}
+          onPromptChange={setPrompt}
+          activeModelTitle={activeModelTitle}
+          activeModelSupportLabel={activeModelSupportLabel}
+          runtimeLabel={runtimeLabel}
+          effectiveRuntimeLabel={effectiveRuntimeLabel}
+          modelStorageLabel={modelStorageLabel}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onSaveMarkdown={onSaveMarkdown}
+          canSaveMarkdown={Boolean(selectedJob?.output_path)}
+        />
+      }
+      preview={
+        <PreviewWorkspace
+          selectedJob={selectedJob}
+          renderedMarkdown={selectedRenderedMarkdown}
+          selectedStream={selectedStream}
+          onRetry={onRetryJob}
+          onCancel={onCancelJob}
+          onOpenOutputFolder={onOpenOutputFolder}
+          onRevealInExplorer={onRevealInExplorer}
+          onCopyMarkdown={onCopyMarkdown}
+          isCancelRequested={
+            selectedJob ? Boolean(cancelingJobs[selectedJob.job_id]) : false
+          }
+        />
+      }
+      footer={
+        <footer className="bottom-bar" aria-live="polite">
+          <div className="log">{log}</div>
+          <div className="bottom-note">{presetSummary}</div>
+        </footer>
+      }
+      drawer={
+        drawerSettings ? (
+          <SettingsDrawer
+            open={settingsOpen}
+            settings={drawerSettings}
+            appDefaults={appDefaults}
+            modelCatalog={modelCatalog}
+            runtimeStatus={runtimeStatus}
+            storageInfo={storageInfo}
+            modelInput={modelInput}
+            modelStoragePath={onboardingInfo?.model_storage_path || null}
+            downloadState={downloadState}
+            onModelInputChange={setModelInput}
+            onDownloadModel={onDownloadModel}
+            onRefreshModels={refreshLocalCatalog}
+            onClose={() => setSettingsOpen(false)}
+            onSave={handleSettingsSave}
           />
-        </section>
-
-        <section className="panel command-panel">
-          <div className="panel-title">Start extraction</div>
-          <div className="command-copy">
-            Pick the speed and quality you want, then drop files, paste an image, or browse
-            for files from your computer.
-          </div>
-
-          {onboardingOpen && (
-            <section className="onboarding-card" aria-label="First-run guide">
-              <div className="onboarding-header">
-                <div>
-                  <div className="section-title">First-run guide</div>
-                  <div className="onboarding-title">{onboardingStepData.title}</div>
-                </div>
-                <button className="btn ghost" onClick={() => dismissOnboarding(true)}>
-                  Skip
-                </button>
-              </div>
-              <p className="onboarding-body">{onboardingStepData.body}</p>
-              <div className="onboarding-detail">{onboardingStepData.detail}</div>
-              <div className="onboarding-progress">
-                <span>{`Step ${onboardingStep + 1} of ${onboardingSteps.length}`}</span>
-                <div className="onboarding-progress-bar" aria-hidden="true">
-                  <div
-                    className="onboarding-progress-fill"
-                    style={{
-                      width: `${((onboardingStep + 1) / onboardingSteps.length) * 100}%`,
-                    }}
-                  />
-                </div>
-              </div>
-              <div className="onboarding-actions">
-                <button
-                  className="btn ghost"
-                  onClick={() => setOnboardingStep((current) => Math.max(0, current - 1))}
-                  disabled={onboardingStep === 0}
-                >
-                  Back
-                </button>
-                <button
-                  className="btn primary"
-                  onClick={() => {
-                    if (onboardingStep === onboardingSteps.length - 1) {
-                      dismissOnboarding(true)
-                      return
-                    }
-                    setOnboardingStep((current) => Math.min(onboardingSteps.length - 1, current + 1))
-                  }}
-                >
-                  {onboardingStep === onboardingSteps.length - 1
-                    ? 'Start extraction'
-                    : 'Next'}
-                </button>
-              </div>
-            </section>
-          )}
-
-          {(modelMissing || downloadState.status === 'error') && (
-            <section className="setup-card" aria-live="polite">
-              <div className="setup-card-header">
-                <div>
-                  <div className="section-title">Setup status</div>
-                  <div className="setup-card-title">
-                    {setupCardTitle}
-                  </div>
-                </div>
-                <div className="setup-card-badge">
-                  {runtimeSetupIssue
-                    ? 'Runtime'
-                    : downloadState.status === 'error'
-                      ? 'Paused'
-                      : `${downloadProgressPercent}%`}
-                </div>
-              </div>
-              <div className="setup-card-copy">{setupCardBody}</div>
-              {!runtimeSetupIssue && downloadState.status !== 'error' && (
-                <div className="model-progress">
-                  <div className="model-progress-bar">
-                    <div
-                      className="model-progress-fill"
-                      style={{ width: `${downloadProgressPercent}%` }}
-                    />
-                  </div>
-                  <div className="model-progress-text">
-                    {downloadState.status === 'verifying'
-                      ? downloadState.message || 'Verifying download...'
-                      : downloadState.total_bytes
-                      ? `${downloadProgressPercent}% (${formatBytes(downloadState.downloaded_bytes)} / ${formatBytes(downloadState.total_bytes)})`
-                      : `${downloadProgressPercent}%`}
-                  </div>
-                </div>
-              )}
-            </section>
-          )}
-
-          <section className="preset-section" aria-label="Extraction presets">
-            <div className="preset-header">
-              <div className="section-title">Presets</div>
-              <div className="preset-note">{presetSummary}</div>
-            </div>
-            <div className="preset-grid">
-              {PRESET_ORDER.map((key) => {
-                const preset = PRESETS[key]
-                const selected = selectedPreset === key
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    className={`preset-card ${selected ? 'selected' : ''}`}
-                    aria-pressed={selected}
-                    onClick={() => {
-                      setSelectedPreset(key)
-                      setLog(`${preset.label} preset selected.`)
-                    }}
-                  >
-                    <span className="preset-name">{preset.label}</span>
-                    <span className="preset-copy">{preset.description}</span>
-                    <span className="preset-meta">{preset.meta}</span>
-                  </button>
-                )
-              })}
-            </div>
-            {selectedPreset === null && (
-              <div className="preset-custom-note">
-                Advanced custom settings are active for the next run.
-              </div>
-            )}
-          </section>
-
-          <DropZone
-            disabled={busy || modelMissing}
-            onBrowse={onBrowseFiles}
-            onPasteImage={onPasteImage}
-            onFiles={handlePaths}
-          />
-
-          <div className="advanced-toggle">
-            <button
-              className="btn ghost"
-              aria-expanded={advancedOpen}
-              aria-controls="advanced-panel"
-              onClick={() => setAdvancedOpen((current) => !current)}
-            >
-              {advancedOpen ? 'Hide advanced' : 'Advanced'}
-            </button>
-          </div>
-
-          {advancedOpen && (
-            <section id="advanced-panel" className="advanced-panel">
-              <div className="advanced-copy">
-                Use custom instructions, switch models, or change lower-level OCR settings.
-              </div>
-              <div className="prompt-block">
-                <label className="prompt-label">
-                  Custom instructions
-                  <span className="prompt-hint">Optional. Leave blank for the standard OCR prompt.</span>
-                </label>
-                <textarea
-                  className="prompt-input"
-                  placeholder={DEFAULT_PROMPT}
-                  value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                  rows={4}
-                />
-              </div>
-              <div className="signal-grid advanced-grid">
-                <div className="signal-card">
-                  <span>Active model</span>
-                  <strong>{activeModelTitle}</strong>
-                  <span>{activeModelSupportLabel}</span>
-                </div>
-                <div className="signal-card">
-                  <span>Runtime</span>
-                  <strong>{runtimeProfileLabel(settings.runtime_profile)}</strong>
-                  <span>{runtimeStatus?.effective_runtime_label || 'Checking local runtime...'}</span>
-                </div>
-                <div className="signal-card wide">
-                  <span>Model storage</span>
-                  <strong>{storageInfo?.models_path || onboardingInfo?.model_storage_path || 'Loading...'}</strong>
-                </div>
-              </div>
-              <div className="advanced-actions">
-                <button className="btn ghost" onClick={() => setSettingsOpen(true)}>
-                  Advanced settings
-                </button>
-                <button className="btn ghost" onClick={onSaveMarkdown} disabled={!selectedJob?.output_path}>
-                  Save a copy
-                </button>
-              </div>
-            </section>
-          )}
-        </section>
-
-        <section className="panel preview-panel">
-          <MarkdownPreview
-            key={selectedJob?.job_id || 'empty-preview'}
-            job={selectedJob}
-            renderedMarkdown={selectedRenderedMarkdown}
-            stream={selectedStream}
-            onRetry={onRetryJob}
-            onCancel={onCancelJob}
-            onOpenOutputFolder={onOpenOutputFolder}
-            onRevealInExplorer={onRevealInExplorer}
-            onCopyMarkdown={onCopyMarkdown}
-            isCancelRequested={selectedJob ? Boolean(cancelingJobs[selectedJob.job_id]) : false}
-          />
-        </section>
-      </main>
-
-      <footer className="bottom-bar" aria-live="polite">
-        <div className="log">{log}</div>
-        <div className="bottom-note">{presetSummary}</div>
-      </footer>
-
-      <SettingsDrawer
-        open={settingsOpen}
-        settings={settings}
-        modelCatalog={modelCatalog}
-        runtimeStatus={runtimeStatus}
-        storageInfo={storageInfo}
-        modelInput={modelInput}
-        modelStoragePath={onboardingInfo?.model_storage_path || null}
-        downloadState={downloadState}
-        onModelInputChange={setModelInput}
-        onDownloadModel={onDownloadModel}
-        onRefreshModels={refreshLocalCatalog}
-        onClose={() => setSettingsOpen(false)}
-        onSave={handleSettingsSave}
-      />
-
-      <ToastNotifications
-        toasts={toasts}
-        onDismiss={(id) => setToasts((prev) => prev.filter((toast) => toast.id !== id))}
-      />
-    </div>
+        ) : undefined
+      }
+      toasts={
+        <ToastNotifications
+          toasts={toasts}
+          onDismiss={(id) =>
+            setToasts((prev) => prev.filter((toast) => toast.id !== id))
+          }
+        />
+      }
+    />
   )
 }
 

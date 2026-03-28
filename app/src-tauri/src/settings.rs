@@ -1,5 +1,6 @@
+use crate::defaults;
 use crate::errors::Result;
-use crate::runtime::RuntimeProfile;
+use crate::runtime::{self, RuntimeProfile};
 use crate::storage;
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
@@ -24,8 +25,8 @@ impl Default for Settings {
             dpi: 300,
             chunk_size: 3000,
             auto_open: false,
-            runtime_profile: RuntimeProfile::CpuCompatible,
-            theme: None,
+            runtime_profile: runtime::default_runtime_profile(),
+            theme: Some(defaults::default_theme_id().to_string()),
             model_profile_id: None,
             model_file: None,
         }
