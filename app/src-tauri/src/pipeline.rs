@@ -4,9 +4,11 @@ use crate::events::{
     RunnerEvent, RunnerMode, RunnerStage,
 };
 use crate::formatting::clean_markdown;
+use crate::history;
 use crate::llm::{LlmOcrEngine, OcrStreamEvent};
 use crate::pdf::{render_pdf_pages_lazy, RenderedPdfPage};
 use crate::settings::Settings;
+use crate::storage;
 use base64::Engine;
 use image::{DynamicImage, ImageFormat};
 use once_cell::sync::Lazy;
@@ -21,13 +23,15 @@ use std::thread;
 use tauri::Emitter;
 use uuid::Uuid;
 
-#[derive(Debug, serde::Serialize, Clone)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct JobResult {
     pub job_id: String,
     pub source: String,
     pub output_path: Option<String>,
     pub status: JobStatus,
     pub error: Option<String>,
+    pub progress: Option<f32>,
+    pub message: Option<String>,
 }
 
 const ALLOWED_EXT: &[&str] = &["png", "jpg", "jpeg", "pdf"];
@@ -183,6 +187,15 @@ pub(crate) fn process_batch_with_observer(
         let path = PathBuf::from(&raw);
         let job_id = Uuid::new_v4().to_string();
         let _job_guard = ActiveJobGuard::register(job_id.clone());
+        let queued_job = JobResult {
+            job_id: job_id.clone(),
+            source: raw.clone(),
+            output_path: None,
+            status: JobStatus::Queued,
+            error: None,
+            progress: Some(0.0),
+            message: Some("Waiting to start".into()),
+        };
 
         emit_progress(
             observer,
@@ -196,6 +209,9 @@ pub(crate) fn process_batch_with_observer(
             None,
             None,
         );
+        if let Err(err) = history::record_job(&queued_job) {
+            log::warn!("failed to record queued job history: {err}");
+        }
 
         let res = if is_cancel_requested(&job_id) {
             canceled(job_id, raw, observer)
@@ -213,6 +229,8 @@ pub(crate) fn process_batch_with_observer(
                         output_path: Some(out.to_string_lossy().into_owned()),
                         status: JobStatus::Done,
                         error: None,
+                        progress: Some(1.0),
+                        message: Some("Markdown ready".into()),
                     }
                 }
                 Err(PipelineError::Canceled) => canceled(job_id, raw, observer),
@@ -220,6 +238,9 @@ pub(crate) fn process_batch_with_observer(
             }
         };
 
+        if let Err(err) = history::record_job(&res) {
+            log::warn!("failed to update job history: {err}");
+        }
         results.push(res);
     }
 
@@ -246,6 +267,8 @@ fn canceled(job_id: String, source: String, observer: &mut dyn PipelineObserver)
         output_path: None,
         status: JobStatus::Canceled,
         error: None,
+        progress: Some(1.0),
+        message: Some("Canceled".into()),
     }
 }
 
@@ -301,6 +324,8 @@ fn fail(
         output_path: None,
         status: JobStatus::Failed,
         error: Some(msg),
+        progress: Some(1.0),
+        message: Some("Needs attention".into()),
     }
 }
 
@@ -382,16 +407,8 @@ fn process_single(
         Some(page_texts.len()),
     )?;
 
-    let parent = path
-        .parent()
-        .ok_or_else(|| PipelineError::InvalidInput("missing parent directory".into()))?;
-    let stem = path
-        .file_stem()
-        .ok_or_else(|| PipelineError::InvalidInput("invalid file name".into()))?;
-
-    let mut out = parent.to_path_buf();
-    out.push(format!("{}.md", stem.to_string_lossy()));
-    fs::write(&out, markdown)?;
+    let out = storage::next_output_markdown_path(path)?;
+    storage::atomic_write(&out, markdown.as_bytes())?;
 
     emit_progress(
         observer,
@@ -429,8 +446,8 @@ fn process_pdf_pages(
         None,
     );
 
-    let render_dir = tempfile::tempdir()?;
-    let preprocess_dir = tempfile::tempdir()?;
+    let render_dir = storage::create_temp_work_dir("pdf-render-")?;
+    let preprocess_dir = storage::create_temp_work_dir("pdf-preprocess-")?;
     let (event_tx, event_rx) = mpsc::channel::<PdfPipelineEvent>();
     let (ocr_tx, ocr_rx) = mpsc::channel::<OcrPageJob>();
 
@@ -845,7 +862,7 @@ fn process_image_pages(
     ocr: &LlmOcrEngine,
     prompt: &str,
 ) -> Result<Vec<String>> {
-    let tempdir = tempfile::tempdir()?;
+    let tempdir = storage::create_temp_work_dir("image-preprocess-")?;
     let out = preprocess_image_to_png(path, tempdir.path(), "image")?;
     let preview_image = encode_preview_image_data_url(&out)?;
 

@@ -17,6 +17,7 @@ import type {
   ModelDownloadEvent,
   RunnerMode,
   RunnerStage,
+  StorageInfo,
 } from './types'
 import './App.css'
 
@@ -30,7 +31,7 @@ type Settings = {
 }
 
 type ModelDownloadState = {
-  status: 'idle' | 'starting' | 'downloading' | 'done' | 'error'
+  status: 'idle' | 'starting' | 'downloading' | 'verifying' | 'done' | 'error'
   progress: number
   message?: string | null
   file_name?: string | null
@@ -267,6 +268,7 @@ function App() {
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null)
   const [modelInput, setModelInput] = useState('')
   const [downloadState, setDownloadState] = useState<ModelDownloadState>(defaultDownloadState)
+  const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null)
   const [prompt, setPrompt] = useState('')
   const [autoDownloadAttempted, setAutoDownloadAttempted] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -376,7 +378,7 @@ function App() {
       {
         title: 'The first run downloads a model once',
         body:
-          modelMissing || ['starting', 'downloading'].includes(downloadState.status)
+          modelMissing || ['starting', 'downloading', 'verifying'].includes(downloadState.status)
             ? 'The recommended OCR model is being downloaded for first-time setup. Keep the app open until it finishes.'
             : 'If no local OCR model is installed, VisiTexta downloads the recommended model once and reuses it later.',
         detail:
@@ -503,6 +505,12 @@ function App() {
   }, [])
 
   useEffect(() => {
+    invoke<JobResult[]>('get_job_history')
+      .then((history) => setJobs(history))
+      .catch(() => setJobs([]))
+  }, [])
+
+  useEffect(() => {
     invoke<Settings>('get_settings')
       .then((result) => {
         setSettings(result)
@@ -523,6 +531,9 @@ function App() {
     invoke<OnboardingInfo>('get_onboarding_info')
       .then((info) => setOnboardingInfo(info))
       .catch(() => setOnboardingInfo(null))
+    invoke<StorageInfo>('get_storage_info')
+      .then((info) => setStorageInfo(info))
+      .catch(() => setStorageInfo(null))
   }, [])
 
   useEffect(() => {
@@ -808,7 +819,7 @@ function App() {
   async function handlePaths(paths: string[]) {
     if (!paths.length) return
     if (modelMissing) {
-      const downloading = ['starting', 'downloading'].includes(downloadState.status)
+      const downloading = ['starting', 'downloading', 'verifying'].includes(downloadState.status)
       setLog(
         downloading
           ? 'First-time setup is still downloading the OCR model.'
@@ -857,7 +868,7 @@ function App() {
 
   async function handlePastedImage(blob: Blob) {
     if (modelMissing) {
-      const downloading = ['starting', 'downloading'].includes(downloadState.status)
+      const downloading = ['starting', 'downloading', 'verifying'].includes(downloadState.status)
       enqueueToast(
         downloading
           ? 'Wait for the recommended model download to finish before pasting an image.'
@@ -1252,7 +1263,9 @@ function App() {
                     />
                   </div>
                   <div className="model-progress-text">
-                    {downloadState.total_bytes
+                    {downloadState.status === 'verifying'
+                      ? downloadState.message || 'Verifying download...'
+                      : downloadState.total_bytes
                       ? `${downloadProgressPercent}% (${formatBytes(downloadState.downloaded_bytes)} / ${formatBytes(downloadState.total_bytes)})`
                       : `${downloadProgressPercent}%`}
                   </div>
@@ -1339,7 +1352,7 @@ function App() {
                 </div>
                 <div className="signal-card wide">
                   <span>Model storage</span>
-                  <strong>{onboardingInfo?.model_storage_path || 'Loading...'}</strong>
+                  <strong>{storageInfo?.models_path || onboardingInfo?.model_storage_path || 'Loading...'}</strong>
                 </div>
               </div>
               <div className="advanced-actions">
@@ -1379,6 +1392,7 @@ function App() {
         open={settingsOpen}
         settings={settings}
         modelCatalog={modelCatalog}
+        storageInfo={storageInfo}
         modelInput={modelInput}
         modelStoragePath={onboardingInfo?.model_storage_path || null}
         downloadState={downloadState}

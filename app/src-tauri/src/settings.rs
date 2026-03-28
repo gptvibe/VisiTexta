@@ -1,9 +1,7 @@
-use crate::errors::{PipelineError, Result};
+use crate::errors::Result;
+use crate::storage;
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
-
-const APP_DIR: &str = "VisiTexta";
-const SETTINGS_FILE: &str = "settings.json";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
@@ -48,19 +46,12 @@ impl Settings {
 
     pub fn save(&self) -> Result<()> {
         let path = settings_path()?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let serialized = serde_json::to_vec_pretty(self)?;
-        fs::write(path, serialized)?;
+        storage::atomic_write(&path, &serialized)?;
         Ok(())
     }
 }
 
 fn settings_path() -> Result<PathBuf> {
-    let mut base = dirs::config_dir()
-        .ok_or_else(|| PipelineError::InvalidInput("could not resolve config directory".into()))?;
-    base.push(APP_DIR);
-    base.push(SETTINGS_FILE);
-    Ok(base)
+    Ok(storage::storage_paths()?.settings_path)
 }

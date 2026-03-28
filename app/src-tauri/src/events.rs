@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(tag = "type", content = "data")]
@@ -47,13 +47,13 @@ pub struct RunnerEvent {
     pub will_fallback: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub enum RunnerMode {
     Persistent,
     Transient,
 }
 
-#[derive(Debug, Serialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub enum RunnerStage {
     WorkerStarting,
     ModelReady,
@@ -62,25 +62,25 @@ pub enum RunnerStage {
     Error,
 }
 
-#[derive(Debug, Serialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub enum PreviewKind {
     Rendered,
     Ocr,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CompletedEvent {
     pub job_id: String,
     pub output_path: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ErrorEvent {
     pub job_id: String,
     pub message: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub enum JobStatus {
     Queued,
     Rendering,

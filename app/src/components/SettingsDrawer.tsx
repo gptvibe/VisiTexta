@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { LocalModelInfo, ModelCatalog, ModelProfile } from '../types'
+import type { LocalModelInfo, ModelCatalog, ModelProfile, StorageInfo } from '../types'
 
 type Settings = {
   threads: number
@@ -11,7 +11,7 @@ type Settings = {
 }
 
 type ModelDownloadState = {
-  status: 'idle' | 'starting' | 'downloading' | 'done' | 'error'
+  status: 'idle' | 'starting' | 'downloading' | 'verifying' | 'done' | 'error'
   progress: number
   message?: string | null
   file_name?: string | null
@@ -23,6 +23,7 @@ type SettingsDrawerProps = {
   open: boolean
   settings: Settings
   modelCatalog: ModelCatalog | null
+  storageInfo?: StorageInfo | null
   modelInput: string
   modelStoragePath?: string | null
   downloadState: ModelDownloadState
@@ -123,6 +124,7 @@ export function SettingsDrawer({
   open,
   settings,
   modelCatalog,
+  storageInfo,
   modelInput,
   modelStoragePath,
   downloadState,
@@ -193,13 +195,17 @@ export function SettingsDrawer({
   const downloadedLabel = formatBytes(downloadState.downloaded_bytes)
   const totalLabel = formatBytes(downloadState.total_bytes)
   const isDownloading =
-    downloadState.status === 'starting' || downloadState.status === 'downloading'
+    downloadState.status === 'starting' ||
+    downloadState.status === 'downloading' ||
+    downloadState.status === 'verifying'
 
   let progressText = ''
   if (downloadState.status === 'error') {
     progressText = downloadState.message || 'Download failed.'
   } else if (downloadState.status === 'done') {
-    progressText = 'Download complete.'
+    progressText = downloadState.message || 'Download complete.'
+  } else if (downloadState.status === 'verifying') {
+    progressText = downloadState.message || 'Verifying download...'
   } else if (downloadState.status !== 'idle') {
     if (downloadedLabel && totalLabel) {
       progressText = `${percent}% (${downloadedLabel} / ${totalLabel})`
@@ -252,6 +258,34 @@ export function SettingsDrawer({
             />
             <span>Auto-open output folder</span>
           </label>
+
+          {storageInfo && (
+            <div className="drawer-section">
+              <div className="section-title">Windows storage</div>
+              <div className="field-note">
+                {storageInfo.mode === 'portable'
+                  ? 'Portable mode keeps VisiTexta data beside the executable.'
+                  : 'Installer mode keeps VisiTexta data under %LOCALAPPDATA%.'}
+              </div>
+              <div className="model-profile-meta">
+                <span>Settings</span>
+                <strong>{storageInfo.settings_path}</strong>
+              </div>
+              <div className="model-profile-meta">
+                <span>History</span>
+                <strong>{storageInfo.history_path}</strong>
+              </div>
+              <div className="model-profile-meta">
+                <span>Models</span>
+                <strong>{storageInfo.models_path}</strong>
+              </div>
+              <div className="model-profile-meta">
+                <span>Temp work files</span>
+                <strong>{storageInfo.temp_path}</strong>
+              </div>
+              <div className="field-note">{storageInfo.outputs_description}</div>
+            </div>
+          )}
 
           <div className="drawer-section">
             <div className="section-title">Supported profiles</div>

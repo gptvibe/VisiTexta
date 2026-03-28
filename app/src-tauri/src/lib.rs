@@ -3,12 +3,14 @@ pub mod benchmark;
 mod errors;
 mod events;
 mod formatting;
+mod history;
 mod llm;
 mod models;
 mod pdf;
 mod pipeline;
 mod runtime;
 mod settings;
+mod storage;
 
 use base64::Engine;
 use pipeline::JobResult;
@@ -19,7 +21,14 @@ use uuid::Uuid;
 
 #[derive(serde::Serialize)]
 struct OnboardingInfo {
+    storage_mode: storage::StorageMode,
+    app_storage_path: String,
+    settings_storage_path: String,
+    history_storage_path: String,
     model_storage_path: String,
+    temp_storage_path: String,
+    pasted_inputs_path: String,
+    output_description: String,
     recommended_model_profile_id: String,
     recommended_model_label: String,
     recommended_model_file: String,
@@ -41,8 +50,11 @@ pub fn run() {
             }
             let _ = app.handle().plugin(tauri_plugin_dialog::init());
             let _ = app.handle().plugin(tauri_plugin_clipboard_manager::init());
-            if let Err(err) = models::ensure_models_dir() {
-                log::warn!("failed to prepare models directory: {err}");
+            if let Err(err) = storage::prepare_startup() {
+                log::warn!("failed to prepare app storage: {err}");
+            }
+            if let Err(err) = history::recover_interrupted_jobs() {
+                log::warn!("failed to recover interrupted jobs: {err}");
             }
             Ok(())
         })
@@ -52,6 +64,8 @@ pub fn run() {
             cancel_job,
             get_settings,
             get_onboarding_info,
+            get_storage_info,
+            get_job_history,
             set_settings,
             copy_file_to_clipboard,
             open_output_folder,
@@ -97,7 +111,7 @@ async fn enqueue_paths(
 ) -> Result<Vec<JobResult>, String> {
     let settings = Settings::load();
     let dpi = dpi.unwrap_or(settings.dpi);
-    tauri::async_runtime::spawn_blocking(move || {
+    let results = tauri::async_runtime::spawn_blocking(move || {
         // Wrap in catch_unwind so an unexpected panic inside the OCR worker
         // surfaces as a readable error string rather than an opaque JoinError.
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -114,7 +128,9 @@ async fn enqueue_paths(
     })
     .await
     .map_err(|e| format!("background task failed: {e}"))?
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    Ok(results)
 }
 
 #[tauri::command]
@@ -192,7 +208,8 @@ fn read_markdown_file(path: String) -> Result<String, String> {
 #[tauri::command]
 fn save_markdown_as(src_path: String, dest_path: String) -> Result<(), String> {
     let content = std::fs::read_to_string(&src_path).map_err(|e| e.to_string())?;
-    std::fs::write(dest_path, content).map_err(|e| e.to_string())
+    storage::atomic_write(std::path::Path::new(&dest_path), content.as_bytes())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -202,18 +219,32 @@ fn get_settings() -> Settings {
 
 #[tauri::command]
 fn get_onboarding_info() -> Result<OnboardingInfo, String> {
-    let model_storage_path = models::ensure_models_dir()
-        .map_err(|e| e.to_string())?
-        .to_string_lossy()
-        .into_owned();
+    let storage_info = storage::storage_info().map_err(|e| e.to_string())?;
 
     Ok(OnboardingInfo {
-        model_storage_path,
+        storage_mode: storage_info.mode,
+        app_storage_path: storage_info.root_path,
+        settings_storage_path: storage_info.settings_path,
+        history_storage_path: storage_info.history_path,
+        model_storage_path: storage_info.models_path,
+        temp_storage_path: storage_info.temp_path,
+        pasted_inputs_path: storage_info.pasted_inputs_path,
+        output_description: storage_info.outputs_description,
         recommended_model_profile_id: models::recommended_model_profile_id().to_string(),
         recommended_model_label: models::recommended_model_label().to_string(),
         recommended_model_file: models::recommended_model_file_name().to_string(),
         recommended_model_repo: models::recommended_model_repo().to_string(),
     })
+}
+
+#[tauri::command]
+fn get_storage_info() -> Result<storage::StorageInfo, String> {
+    storage::storage_info().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_job_history() -> Result<Vec<JobResult>, String> {
+    history::load_recent_jobs().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -233,10 +264,7 @@ fn write_pasted_image(image_base64: &str, mime_type: &str) -> Result<String, Str
         .decode(encoded)
         .map_err(|e| e.to_string())?;
 
-    let mut dir = dirs::data_local_dir()
-        .ok_or_else(|| "could not resolve local app data directory".to_string())?;
-    dir.push("VisiTexta");
-    dir.push("pasted-inputs");
+    let dir = storage::pasted_inputs_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let extension = match mime_type.to_ascii_lowercase().as_str() {

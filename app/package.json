@@ -10,7 +10,9 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build --bundles msi,nsis",
+    "tauri:build:installer": "tauri build --bundles msi,nsis",
+    "tauri:build:portable": "powershell -ExecutionPolicy Bypass -File ./scripts/package-portable.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",

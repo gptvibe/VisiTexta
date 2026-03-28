@@ -1,18 +1,22 @@
 use crate::errors::{PipelineError, Result};
 use crate::settings::Settings;
+use crate::storage;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use tauri::Emitter;
+use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 pub const DEFAULT_MODEL_PROFILE_ID: &str = "glm-ocr";
 
 const HF_API_BASE: &str = "https://huggingface.co/api/models";
 const HF_RESOLVE_BASE: &str = "https://huggingface.co";
-const APP_DIR: &str = "VisiTexta";
 const MODEL_MANIFEST_FILE: &str = ".visitexta-models.json";
+const PART_EXTENSION: &str = "part";
 
 const CURATED_RUNNER_COMPATIBILITY: RunnerCompatibility = RunnerCompatibility {
     transient_cli: true,
@@ -212,13 +216,21 @@ struct InstalledModelRecord {
 
 #[derive(Debug, Deserialize, Clone)]
 struct HfModelInfo {
-    siblings: Option<Vec<HfSibling>>,
+    files: Vec<HfSibling>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 struct HfSibling {
+    #[serde(alias = "path", alias = "rfilename")]
     rfilename: String,
     size: Option<u64>,
+    lfs: Option<HfLfsInfo>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct HfLfsInfo {
+    oid: String,
+    size: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -250,6 +262,12 @@ struct DownloadPlan {
     profile_id: Option<String>,
     inspected: InspectedModel,
     info: HfModelInfo,
+}
+
+#[derive(Debug, Clone)]
+struct RemoteFileMetadata {
+    total_bytes: Option<u64>,
+    checksum_sha256: Option<String>,
 }
 
 impl ModelProfileDefinition {
@@ -916,22 +934,19 @@ pub async fn download_model(app: &tauri::AppHandle, input: &str) -> Result<Downl
     let plan = resolve_download_plan(&client, trimmed).await?;
     let models_dir = resolve_models_dir(true)?;
     let target_path = models_dir.join(&plan.file_name);
+    let require_checksum = plan.profile_id.is_some();
+    let main_metadata = remote_file_metadata_for(&plan.info, &plan.file_name)?;
 
-    emit_download(
+    download_file_with_progress(
         app,
+        &client,
         &plan.repo,
         &plan.file_name,
-        0,
-        None,
-        0.0,
-        "starting",
-        None,
-    );
-
-    if !target_path.exists() {
-        download_file_with_progress(app, &client, &plan.repo, &plan.file_name, &target_path)
-            .await?;
-    }
+        &target_path,
+        &main_metadata,
+        require_checksum,
+    )
+    .await?;
 
     let mut downloaded_mmproj = None;
     if plan.inspected.requires_mmproj {
@@ -943,20 +958,17 @@ pub async fn download_model(app: &tauri::AppHandle, input: &str) -> Result<Downl
         })?;
 
         let mmproj_target = models_dir.join(&mmproj_file);
-        if !mmproj_target.exists() {
-            emit_download(
-                app,
-                &plan.repo,
-                &mmproj_file,
-                0,
-                None,
-                0.0,
-                "starting",
-                Some("downloading companion mmproj".into()),
-            );
-            download_file_with_progress(app, &client, &plan.repo, &mmproj_file, &mmproj_target)
-                .await?;
-        }
+        let mmproj_metadata = remote_file_metadata_for(&plan.info, &mmproj_file)?;
+        download_file_with_progress(
+            app,
+            &client,
+            &plan.repo,
+            &mmproj_file,
+            &mmproj_target,
+            &mmproj_metadata,
+            require_checksum,
+        )
+        .await?;
         downloaded_mmproj = Some(mmproj_file);
     }
 
@@ -1178,7 +1190,7 @@ fn sanitize_file_name(file_name: &str) -> Result<String> {
 }
 
 async fn fetch_model_info(client: &reqwest::Client, repo: &str) -> Result<HfModelInfo> {
-    let url = format!("{}/{}", HF_API_BASE, repo);
+    let url = format!("{}/{}/tree/main", HF_API_BASE, repo);
     let response = client
         .get(url)
         .send()
@@ -1192,10 +1204,12 @@ async fn fetch_model_info(client: &reqwest::Client, repo: &str) -> Result<HfMode
         )));
     }
 
-    response
-        .json()
+    let files = response
+        .json::<Vec<HfSibling>>()
         .await
-        .map_err(|e| PipelineError::Other(e.into()))
+        .map_err(|e| PipelineError::Other(e.into()))?;
+
+    Ok(HfModelInfo { files })
 }
 
 fn validate_main_file(info: &HfModelInfo, file_name: &str) -> Result<()> {
@@ -1209,14 +1223,9 @@ fn validate_main_file(info: &HfModelInfo, file_name: &str) -> Result<()> {
     }
 
     let exists = info
-        .siblings
-        .as_ref()
-        .map(|siblings| {
-            siblings
-                .iter()
-                .any(|entry| entry.rfilename.eq_ignore_ascii_case(&sanitized))
-        })
-        .unwrap_or(false);
+        .files
+        .iter()
+        .any(|entry| entry.rfilename.eq_ignore_ascii_case(&sanitized));
 
     if exists {
         return Ok(());
@@ -1230,9 +1239,8 @@ fn validate_main_file(info: &HfModelInfo, file_name: &str) -> Result<()> {
 
 fn select_mmproj_file_from_info(info: &HfModelInfo) -> Option<String> {
     let mut mmproj: Vec<HfSibling> = info
-        .siblings
+        .files
         .clone()
-        .unwrap_or_default()
         .into_iter()
         .filter(|entry| {
             let lowered = entry.rfilename.to_ascii_lowercase();
@@ -1258,27 +1266,159 @@ fn select_mmproj_file_from_info(info: &HfModelInfo) -> Option<String> {
     mmproj.first().map(|entry| entry.rfilename.clone())
 }
 
+fn remote_file_metadata_for(info: &HfModelInfo, file_name: &str) -> Result<RemoteFileMetadata> {
+    let sanitized = sanitize_file_name(file_name)?;
+    let entry = info
+        .files
+        .iter()
+        .find(|candidate| candidate.rfilename.eq_ignore_ascii_case(&sanitized))
+        .ok_or_else(|| {
+            PipelineError::InvalidInput(format!(
+                "the requested model file was not found in the repo: {}",
+                sanitized
+            ))
+        })?;
+
+    Ok(RemoteFileMetadata {
+        total_bytes: entry
+            .size
+            .or_else(|| entry.lfs.as_ref().map(|value| value.size)),
+        checksum_sha256: entry.lfs.as_ref().map(|value| value.oid.clone()),
+    })
+}
+
 async fn download_file_with_progress(
     app: &tauri::AppHandle,
     client: &reqwest::Client,
     repo: &str,
     file_name: &str,
     target_path: &Path,
+    metadata: &RemoteFileMetadata,
+    checksum_required: bool,
 ) -> Result<()> {
     let url = format!("{}/{}/resolve/main/{}", HF_RESOLVE_BASE, repo, file_name);
-    let response = client
-        .get(url)
+
+    emit_download(
+        app,
+        repo,
+        file_name,
+        0,
+        metadata.total_bytes,
+        0.0,
+        "starting",
+        Some("checking existing downloads".into()),
+    );
+
+    if target_path.exists() {
+        match verify_file_checksum(target_path, &metadata, checksum_required).await {
+            Ok(checksum_verified) => {
+                emit_download(
+                    app,
+                    repo,
+                    file_name,
+                    metadata.total_bytes.unwrap_or_else(|| {
+                        fs::metadata(target_path)
+                            .map(|meta| meta.len())
+                            .unwrap_or(0)
+                    }),
+                    metadata.total_bytes,
+                    1.0,
+                    "done",
+                    Some(if checksum_verified {
+                        "using existing verified download".into()
+                    } else {
+                        "using existing download".into()
+                    }),
+                );
+                return Ok(());
+            }
+            Err(err) => {
+                log::warn!(
+                    "existing download at {} did not verify: {err}",
+                    target_path.to_string_lossy()
+                );
+                let failed_target = recovery_file_path(target_path, "corrupt");
+                let _ = tokio::fs::rename(target_path, &failed_target).await;
+            }
+        }
+    }
+
+    let temp_path = part_file_path(target_path);
+    let mut resume_from = match tokio::fs::metadata(&temp_path).await {
+        Ok(meta) => meta.len(),
+        Err(_) => 0,
+    };
+
+    if let Some(total_bytes) = metadata.total_bytes {
+        if resume_from > total_bytes {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            resume_from = 0;
+        } else if resume_from == total_bytes && total_bytes > 0 {
+            match verify_file_checksum(&temp_path, &metadata, checksum_required).await {
+                Ok(checksum_verified) => {
+                    if target_path.exists() {
+                        let _ = tokio::fs::remove_file(target_path).await;
+                    }
+                    tokio::fs::rename(&temp_path, target_path).await?;
+                    emit_download(
+                        app,
+                        repo,
+                        file_name,
+                        total_bytes,
+                        metadata.total_bytes,
+                        1.0,
+                        "done",
+                        Some(if checksum_verified {
+                            "resumed partial download and verified it".into()
+                        } else {
+                            "resumed partial download".into()
+                        }),
+                    );
+                    return Ok(());
+                }
+                Err(err) => {
+                    log::warn!(
+                        "stale partial download at {} did not verify: {err}",
+                        temp_path.to_string_lossy()
+                    );
+                    let _ = tokio::fs::remove_file(&temp_path).await;
+                    resume_from = 0;
+                }
+            }
+        }
+    }
+
+    let mut request = client.get(&url);
+    if resume_from > 0 {
+        request = request.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+    }
+
+    let response = request
         .send()
         .await
         .map_err(|e| PipelineError::Other(e.into()))?;
 
-    if !response.status().is_success() {
+    let response = if resume_from > 0 && response.status() == reqwest::StatusCode::OK {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        resume_from = 0;
+        client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| PipelineError::Other(e.into()))?
+    } else {
+        response
+    };
+
+    if !(response.status().is_success()
+        || (resume_from > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT))
+    {
         emit_download(
             app,
             repo,
             file_name,
-            0,
-            None,
+            resume_from,
+            metadata.total_bytes,
             0.0,
             "error",
             Some(format!("download failed: {}", response.status())),
@@ -1289,13 +1429,35 @@ async fn download_file_with_progress(
         )));
     }
 
-    let total = response.content_length();
-    let temp_path = target_path.with_extension("part");
-    let mut file = tokio::fs::File::create(&temp_path).await?;
-    let mut downloaded: u64 = 0;
-    let mut last_emit_bytes: u64 = 0;
-    let mut last_emit_progress: f32 = 0.0;
+    let total = metadata
+        .total_bytes
+        .or_else(|| response.content_length().map(|value| value + resume_from));
+    let mut file = if resume_from > 0 {
+        OpenOptions::new().append(true).open(&temp_path).await?
+    } else {
+        tokio::fs::File::create(&temp_path).await?
+    };
+    let mut downloaded = resume_from;
+    let mut last_emit_bytes = resume_from;
+    let mut last_emit_progress = total
+        .map(|len| (resume_from as f64 / len.max(1) as f64) as f32)
+        .unwrap_or(0.0);
     let mut stream = response;
+
+    emit_download(
+        app,
+        repo,
+        file_name,
+        downloaded,
+        total,
+        last_emit_progress.min(1.0),
+        "downloading",
+        Some(if resume_from > 0 {
+            "resuming previous partial download".into()
+        } else {
+            "downloading model".into()
+        }),
+    );
 
     while let Some(chunk) = stream
         .chunk()
@@ -1323,12 +1485,49 @@ async fn download_file_with_progress(
                 total,
                 progress.min(1.0),
                 "downloading",
-                None,
+                Some(if resume_from > 0 {
+                    "resuming previous partial download".into()
+                } else {
+                    "downloading model".into()
+                }),
             );
         }
     }
 
     file.flush().await?;
+    emit_download(
+        app,
+        repo,
+        file_name,
+        downloaded,
+        total,
+        1.0,
+        "verifying",
+        Some("verifying download checksum".into()),
+    );
+
+    let checksum_verified =
+        match verify_file_checksum(&temp_path, &metadata, checksum_required).await {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                emit_download(
+                    app,
+                    repo,
+                    file_name,
+                    downloaded,
+                    total,
+                    0.0,
+                    "error",
+                    Some(err.to_string()),
+                );
+                return Err(err);
+            }
+        };
+
+    if target_path.exists() {
+        let _ = tokio::fs::remove_file(target_path).await;
+    }
     tokio::fs::rename(&temp_path, target_path).await?;
 
     emit_download(
@@ -1339,21 +1538,118 @@ async fn download_file_with_progress(
         total,
         1.0,
         "done",
-        Some("download complete".into()),
+        Some(if checksum_verified {
+            "download complete and verified".into()
+        } else {
+            "download complete".into()
+        }),
     );
 
     Ok(())
 }
 
+fn recovery_file_path(target_path: &Path, suffix: &str) -> PathBuf {
+    let stem = target_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("download");
+    let extension = target_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+
+    let file_name = if extension.is_empty() {
+        format!("{stem}.{suffix}-{timestamp}")
+    } else {
+        format!("{stem}.{suffix}-{timestamp}.{extension}")
+    };
+
+    target_path.with_file_name(file_name)
+}
+
+async fn verify_file_checksum(
+    path: &Path,
+    metadata: &RemoteFileMetadata,
+    checksum_required: bool,
+) -> Result<bool> {
+    if let Some(expected_size) = metadata.total_bytes {
+        let actual_size = tokio::fs::metadata(path).await?.len();
+        if actual_size != expected_size {
+            return Err(PipelineError::InvalidInput(format!(
+                "downloaded file size mismatch (expected {expected_size} bytes, got {actual_size})"
+            )));
+        }
+    }
+
+    let Some(expected) = metadata.checksum_sha256.as_deref() else {
+        if checksum_required {
+            return Err(PipelineError::InvalidInput(
+                "checksum verification is required for curated downloads, but no remote checksum was provided"
+                    .into(),
+            ));
+        }
+        return Ok(false);
+    };
+
+    let path = path.to_path_buf();
+    let actual = tokio::task::spawn_blocking(move || compute_sha256(&path))
+        .await
+        .map_err(|err| PipelineError::InvalidInput(format!("checksum task failed: {err}")))??;
+
+    if actual.eq_ignore_ascii_case(expected) {
+        return Ok(true);
+    }
+
+    Err(PipelineError::InvalidInput(
+        "download checksum verification failed; the file will be downloaded again".into(),
+    ))
+}
+
+fn compute_sha256(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn part_file_path(target_path: &Path) -> PathBuf {
+    let file_name = target_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("download");
+    target_path.with_file_name(format!("{file_name}.{PART_EXTENSION}"))
+}
+
 fn model_dir_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(app_data) = app_models_dir() {
-        candidates.push(app_data);
+    if let Ok(primary) = storage::models_dir() {
+        candidates.push(primary);
     }
+    candidates.extend(legacy_model_dir_candidates());
+
+    let mut seen = HashSet::new();
+    candidates.retain(|dir| seen.insert(dir.clone()));
+    candidates
+}
+
+fn legacy_model_dir_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
     if let Ok(cwd) = std::env::current_dir() {
         candidates.push(cwd.join("models"));
         candidates.push(cwd.join("resources").join("models"));
     }
+
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join("models"));
@@ -1370,68 +1666,18 @@ fn model_dir_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-fn model_dir_creation_candidates() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("models"));
-            if let Some(parent) = dir.parent() {
-                candidates.push(parent.join("models"));
-            }
-        }
-    }
-
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("models"));
-    }
-
-    if let Some(app_data) = app_models_dir() {
-        candidates.push(app_data);
-    }
-
-    let mut seen = HashSet::new();
-    candidates.retain(|dir| seen.insert(dir.clone()));
-    candidates
-}
-
-fn app_models_dir() -> Option<PathBuf> {
-    let mut path = dirs::data_local_dir()?;
-    path.push(APP_DIR);
-    path.push("models");
-    Some(path)
-}
-
 pub fn ensure_models_dir() -> Result<PathBuf> {
     resolve_models_dir(true)
 }
 
 fn resolve_models_dir(create: bool) -> Result<PathBuf> {
-    for candidate in model_dir_candidates() {
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
+    let target = storage::models_dir()?;
 
     if create {
-        let mut last_error: Option<std::io::Error> = None;
-        for target in model_dir_creation_candidates() {
-            match fs::create_dir_all(&target) {
-                Ok(()) => return Ok(target),
-                Err(err) => last_error = Some(err),
-            }
-        }
-
-        return Err(PipelineError::InvalidInput(
-            last_error
-                .map(|err| format!("failed to create models directory: {err}"))
-                .unwrap_or_else(|| "failed to create models directory".into()),
-        ));
+        fs::create_dir_all(&target)?;
     }
 
-    Err(PipelineError::InvalidInput(
-        "models directory not found".into(),
-    ))
+    Ok(target)
 }
 
 fn mmproj_search_dirs(model_path: &Path) -> Vec<PathBuf> {
@@ -1500,7 +1746,7 @@ fn read_install_manifest(dir: &Path) -> InstallManifest {
 fn write_install_manifest(dir: &Path, manifest: &InstallManifest) -> Result<()> {
     let path = manifest_path(dir);
     let bytes = serde_json::to_vec_pretty(manifest)?;
-    fs::write(path, bytes)?;
+    storage::atomic_write(&path, &bytes)?;
     Ok(())
 }
 

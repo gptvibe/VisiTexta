@@ -150,3 +150,14 @@ export type ModelCatalog = {
   profiles: ModelProfile[]
   local_models: LocalModelInfo[]
 }
+
+export type StorageInfo = {
+  mode: 'portable' | 'installer'
+  root_path: string
+  settings_path: string
+  history_path: string
+  models_path: string
+  temp_path: string
+  pasted_inputs_path: string
+  outputs_description: string
+}
