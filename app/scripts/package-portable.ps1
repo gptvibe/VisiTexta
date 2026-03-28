@@ -66,6 +66,16 @@ Set-Content -LiteralPath (Join-Path $portableDataDir '.keep') -Value 'VisiTexta 
 
 Copy-Item -LiteralPath $exe.FullName -Destination $stageExe
 
+Get-ChildItem -Path $releaseRoot -File |
+  Where-Object {
+    $_.FullName -ne $exe.FullName -and
+    $_.Extension -notin @('.d', '.pdb') -and
+    $_.BaseName -notmatch '^ocr_bench$'
+  } |
+  ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $stageDir $_.Name)
+  }
+
 foreach ($folder in @('bin', 'resources')) {
   $source = Join-Path $tauriRoot $folder
   if (Test-Path $source) {

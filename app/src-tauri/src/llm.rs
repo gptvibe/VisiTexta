@@ -48,6 +48,22 @@ const FILTERED_STDOUT_PREFIXES: &[&str] = &[
     "decoding image",
     "llama_perf_context_print",
 ];
+const FILTERED_INSTRUCTION_ECHO_PHRASES: &[&str] = &[
+    "transcribe the visible document text as markdown",
+    "return the document transcription in markdown",
+    "document transcription in markdown",
+    "document content only",
+    "follow any additional ocr preferences from the user when possible",
+    "additional ocr preferences",
+    "no commentary",
+    "no repeated instructions",
+    "no commentary no repeated instructions",
+    "you are an ocr engine",
+    "read all visible text from the provided image",
+    "extract all text from the image and return it as markdown",
+    "return only markdown output and no extra explanation",
+    "only the markdown output and no extra explanation",
+];
 
 #[derive(Debug, Clone)]
 pub enum OcrStreamEvent {
@@ -157,10 +173,7 @@ impl LlmOcrEngine {
     where
         F: FnMut(OcrStreamEvent),
     {
-        let effective_prompt = format!(
-            "You are an OCR engine. Read all visible text from the provided image. {} Return only markdown output and no extra explanation.",
-            prompt.trim()
-        );
+        let effective_prompt = build_ocr_prompt(prompt);
 
         for (index, runtime) in self.runtime_plan.server_runtimes.iter().enumerate() {
             let config = WorkerConfig {
@@ -677,7 +690,8 @@ impl PersistentWorker {
             };
 
             if let Some(chunk) = extract_stream_chunk(&value) {
-                if !chunk.is_empty() {
+                let delta = normalize_stream_chunk(&output, &chunk);
+                if !delta.is_empty() {
                     if !first_token_emitted {
                         on_event(OcrStreamEvent::FirstToken {
                             mode: RunnerMode::Persistent,
@@ -685,10 +699,10 @@ impl PersistentWorker {
                         first_token_emitted = true;
                     }
 
-                    output.push_str(&chunk);
+                    output.push_str(&delta);
                     on_event(OcrStreamEvent::TextChunk {
                         mode: RunnerMode::Persistent,
-                        chunk,
+                        chunk: delta,
                     });
                 }
             }
@@ -954,6 +968,39 @@ fn extract_stream_chunk(value: &Value) -> Option<String> {
         })
 }
 
+fn build_ocr_prompt(prompt: &str) -> String {
+    let trimmed = prompt.trim();
+
+    if trimmed.is_empty() || is_default_ocr_prompt(trimmed) {
+        return "Transcribe the visible document text as markdown.".to_string();
+    }
+
+    format!(
+        "Transcribe the visible document text as markdown.\nFollow any additional OCR preferences from the user when possible.\nAdditional OCR preferences: {}",
+        trimmed
+    )
+}
+
+fn normalize_stream_chunk(accumulated: &str, incoming: &str) -> String {
+    if incoming.is_empty() {
+        return String::new();
+    }
+
+    if accumulated.is_empty() {
+        return incoming.to_string();
+    }
+
+    if incoming == accumulated {
+        return String::new();
+    }
+
+    if let Some(suffix) = incoming.strip_prefix(accumulated) {
+        return suffix.to_string();
+    }
+
+    incoming.to_string()
+}
+
 fn sanitize_stderr(raw: &str) -> String {
     raw.lines()
         .filter(|line| !line.trim().is_empty())
@@ -989,6 +1036,71 @@ fn strip_ansi(raw: &str) -> String {
     ANSI_ESCAPE_RE.replace_all(raw, "").into_owned()
 }
 
+fn normalize_instruction_text(input: &str) -> String {
+    input
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_default_ocr_prompt(prompt: &str) -> bool {
+    matches!(
+        normalize_instruction_text(prompt).as_str(),
+        "extract all text from the image and return it as markdown"
+            | "transcribe the visible document text as markdown"
+            | "read all visible text from the provided image"
+    )
+}
+
+fn matches_instruction_echo_sequence(normalized_line: &str, allow_trailing_prefix: bool) -> bool {
+    if normalized_line.is_empty() {
+        return false;
+    }
+
+    let mut remaining = normalized_line;
+    let mut matched_any = false;
+
+    loop {
+        if remaining.is_empty() {
+            return matched_any;
+        }
+
+        if allow_trailing_prefix
+            && FILTERED_INSTRUCTION_ECHO_PHRASES
+                .iter()
+                .any(|phrase| phrase.starts_with(remaining))
+        {
+            return true;
+        }
+
+        let mut matched_phrase = false;
+        for phrase in FILTERED_INSTRUCTION_ECHO_PHRASES {
+            if let Some(rest) = remaining.strip_prefix(phrase) {
+                remaining = rest.trim_start();
+                matched_any = true;
+                matched_phrase = true;
+                break;
+            }
+        }
+
+        if !matched_phrase {
+            return false;
+        }
+    }
+}
+
+fn is_instruction_echo_line(line: &str) -> bool {
+    matches_instruction_echo_sequence(&normalize_instruction_text(line), false)
+}
+
+fn is_instruction_echo_prefix(line: &str) -> bool {
+    matches_instruction_echo_sequence(&normalize_instruction_text(line), true)
+}
+
 fn should_drop_completed_output_line(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -1000,6 +1112,10 @@ fn should_drop_completed_output_line(line: &str) -> bool {
         .iter()
         .any(|prefix| lower.starts_with(prefix))
     {
+        return true;
+    }
+
+    if is_instruction_echo_line(trimmed) {
         return true;
     }
 
@@ -1024,9 +1140,91 @@ fn should_hold_partial_output_line(line: &str) -> bool {
         return true;
     }
 
+    if is_instruction_echo_prefix(trimmed) {
+        return true;
+    }
+
     if trimmed.starts_with('/') {
         return true;
     }
 
     trimmed.chars().all(|c| matches!(c, '▄' | '▀' | '█' | ' '))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_ocr_prompt, is_default_ocr_prompt, normalize_stream_chunk, sanitize_model_stdout,
+        should_drop_completed_output_line, should_hold_partial_output_line,
+    };
+
+    #[test]
+    fn build_ocr_prompt_collapses_default_prompt() {
+        assert_eq!(
+            build_ocr_prompt("Extract all text from the image and return it as markdown."),
+            "Transcribe the visible document text as markdown."
+        );
+        assert!(is_default_ocr_prompt(
+            "Extract all text from the image and return it as markdown."
+        ));
+    }
+
+    #[test]
+    fn build_ocr_prompt_keeps_custom_preferences() {
+        let prompt = build_ocr_prompt("Preserve tables and bullets.");
+
+        assert!(prompt.contains("Transcribe the visible document text as markdown."));
+        assert!(
+            prompt.contains("Follow any additional OCR preferences from the user when possible.")
+        );
+        assert!(prompt.contains("Additional OCR preferences: Preserve tables and bullets."));
+    }
+
+    #[test]
+    fn normalize_stream_chunk_handles_cumulative_server_frames() {
+        let mut output = String::new();
+
+        let first = normalize_stream_chunk(&output, "Only the markdown output");
+        output.push_str(&first);
+        assert_eq!(first, "Only the markdown output");
+
+        let second = normalize_stream_chunk(
+            &output,
+            "Only the markdown output and no extra explanation.",
+        );
+        output.push_str(&second);
+        assert_eq!(second, " and no extra explanation.");
+
+        let duplicate = normalize_stream_chunk(
+            &output,
+            "Only the markdown output and no extra explanation.",
+        );
+        assert!(duplicate.is_empty());
+        assert_eq!(output, "Only the markdown output and no extra explanation.");
+    }
+
+    #[test]
+    fn sanitize_model_stdout_drops_instruction_echo_lines() {
+        let raw = concat!(
+            "## Page 1\n\n",
+            "No commentary. No repeated instructions.\n",
+            "Invoice total: $42.00\n",
+        );
+
+        assert_eq!(
+            sanitize_model_stdout(raw),
+            "## Page 1\n\nInvoice total: $42.00"
+        );
+    }
+
+    #[test]
+    fn partial_instruction_echo_is_held_until_it_can_be_dropped() {
+        assert!(should_hold_partial_output_line("No commentary. No rep"));
+        assert!(should_drop_completed_output_line(
+            "No commentary. No repeated instructions."
+        ));
+        assert!(!should_hold_partial_output_line(
+            "Only the markdown handbook"
+        ));
+    }
 }
