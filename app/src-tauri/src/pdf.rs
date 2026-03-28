@@ -26,7 +26,7 @@ where
         .load_pdf_from_file(path, None)
         .map_err(|e| PipelineError::Pdf(format!("load failed: {e}")))?;
 
-    let total_pages = doc.pages().len();
+    let total_pages = doc.pages().len() as usize;
     on_start(total_pages)?;
 
     for (idx, page) in doc.pages().iter().enumerate() {

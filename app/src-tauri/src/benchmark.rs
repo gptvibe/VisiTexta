@@ -1,7 +1,6 @@
 use crate::events::{
     CompletedEvent, ErrorEvent, PreviewEvent, ProgressEvent, RunnerEvent, RunnerStage,
 };
-use crate::llm;
 use crate::models;
 use crate::pipeline::{self, PipelineObserver};
 use crate::runtime;
@@ -696,7 +695,7 @@ fn format_bytes(bytes: u64) -> String {
 }
 
 fn ensure_runtime_ready(settings: &Settings) -> Result<()> {
-    if !llm::runtime_has_ocr_runner() {
+    if !runtime::runtime_has_ocr_runner(settings.runtime_profile) {
         bail!("benchmark runtime not ready: no llama OCR runner was found in src-tauri/bin or runtime resources");
     }
 
@@ -770,7 +769,7 @@ impl BenchmarkObserver {
 impl PipelineObserver for BenchmarkObserver {
     fn on_progress(&mut self, _event: ProgressEvent) {}
 
-    fn on_preview(&mut self, event: PreviewEvent) {
+    fn on_preview(&mut self, _event: PreviewEvent) {
         if self.first_preview_ms.is_none() {
             self.first_preview_ms = self.elapsed_ms();
         }

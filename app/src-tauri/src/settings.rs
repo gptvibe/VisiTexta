@@ -1,4 +1,5 @@
 use crate::errors::Result;
+use crate::runtime::RuntimeProfile;
 use crate::storage;
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
@@ -10,6 +11,7 @@ pub struct Settings {
     pub dpi: u16,
     pub chunk_size: usize,
     pub auto_open: bool,
+    pub runtime_profile: RuntimeProfile,
     pub theme: Option<String>,
     pub model_profile_id: Option<String>,
     pub model_file: Option<String>,
@@ -22,6 +24,7 @@ impl Default for Settings {
             dpi: 300,
             chunk_size: 3000,
             auto_open: false,
+            runtime_profile: RuntimeProfile::CpuCompatible,
             theme: None,
             model_profile_id: None,
             model_file: None,

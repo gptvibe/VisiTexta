@@ -1,10 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { LocalModelInfo, ModelCatalog, ModelProfile, StorageInfo } from '../types'
+import type {
+  LocalModelInfo,
+  ModelCatalog,
+  ModelProfile,
+  RuntimeProfile,
+  RuntimeStatus,
+  StorageInfo,
+} from '../types'
 
 type Settings = {
   threads: number
   dpi: number
   auto_open: boolean
+  runtime_profile: RuntimeProfile
   theme?: string | null
   model_profile_id?: string | null
   model_file?: string | null
@@ -23,6 +31,7 @@ type SettingsDrawerProps = {
   open: boolean
   settings: Settings
   modelCatalog: ModelCatalog | null
+  runtimeStatus?: RuntimeStatus | null
   storageInfo?: StorageInfo | null
   modelInput: string
   modelStoragePath?: string | null
@@ -66,6 +75,17 @@ function formatRunnerCompatibility(
 
 function describeLocalOption(model: LocalModelInfo) {
   return `${supportLabel(model)}: ${model.label}`
+}
+
+function describeRuntimeProfile(profile: RuntimeProfile) {
+  switch (profile) {
+    case 'auto':
+      return 'Auto prefers a bundled accelerated runtime when this PC appears compatible, then falls back to the CPU-compatible path.'
+    case 'accelerated_if_available':
+      return 'Accelerated if available tries bundled acceleration first, then falls back cleanly if it is missing or incompatible.'
+    default:
+      return 'CPU compatible is the safe default and uses the widest-compatibility local runtime build.'
+  }
 }
 
 function renderProfileCard(
@@ -124,6 +144,7 @@ export function SettingsDrawer({
   open,
   settings,
   modelCatalog,
+  runtimeStatus,
   storageInfo,
   modelInput,
   modelStoragePath,
@@ -258,6 +279,60 @@ export function SettingsDrawer({
             />
             <span>Auto-open output folder</span>
           </label>
+
+          <div className="drawer-section">
+            <div className="section-title">Runtime profile</div>
+            <label className="field">
+              <span>Local runtime</span>
+              <select
+                value={draft.runtime_profile}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    runtime_profile: event.target.value as RuntimeProfile,
+                  })
+                }
+              >
+                <option value="auto">Auto</option>
+                <option value="cpu_compatible">CPU compatible</option>
+                <option value="accelerated_if_available">Accelerated if available</option>
+              </select>
+            </label>
+            <div className="field-note">{describeRuntimeProfile(draft.runtime_profile)}</div>
+            <div className="field-note">
+              Acceleration changes speed only. OCR semantics stay tied to the same model,
+              prompt, and preprocessing path.
+            </div>
+            {runtimeStatus && (
+              <div className="model-selection-card">
+                <div className="model-badge-row">
+                  <span className={`model-badge ${runtimeStatus.usable_runtime ? 'ready' : 'warning'}`}>
+                    {runtimeStatus.usable_runtime ? 'Usable' : 'Needs runtime'}
+                  </span>
+                  <span
+                    className={`model-badge ${
+                      runtimeStatus.cpu_runtime_available ? 'tested' : 'warning'
+                    }`}
+                  >
+                    {runtimeStatus.cpu_runtime_available ? 'CPU bundled' : 'CPU missing'}
+                  </span>
+                  {runtimeStatus.accelerated_runtime_available && (
+                    <span
+                      className={`model-badge ${
+                        runtimeStatus.accelerated_runtime_compatible ? 'ready' : 'warning'
+                      }`}
+                    >
+                      {runtimeStatus.accelerated_runtime_compatible
+                        ? runtimeStatus.accelerated_runtime_label || 'Acceleration detected'
+                        : runtimeStatus.accelerated_runtime_label || 'Acceleration bundled'}
+                    </span>
+                  )}
+                </div>
+                <div className="model-profile-title">{runtimeStatus.effective_runtime_label}</div>
+                <div className="field-note">{runtimeStatus.summary}</div>
+              </div>
+            )}
+          </div>
 
           {storageInfo && (
             <div className="drawer-section">
@@ -490,7 +565,7 @@ export function SettingsDrawer({
               )}
             </div>
             <button className="btn ghost" onClick={onRefreshModels}>
-              Refresh model catalog
+              Refresh local catalog
             </button>
           </div>
         </div>

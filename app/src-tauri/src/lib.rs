@@ -63,6 +63,7 @@ pub fn run() {
             enqueue_pasted_image,
             cancel_job,
             get_settings,
+            get_runtime_status,
             get_onboarding_info,
             get_storage_info,
             get_job_history,
@@ -177,7 +178,14 @@ fn reveal_in_explorer(path: String) -> Result<(), String> {
 #[tauri::command]
 fn check_model_exists() -> bool {
     let settings = Settings::load();
-    llm::runtime_has_ocr_runner() && models::has_vision_model(&settings)
+    runtime::runtime_has_ocr_runner(settings.runtime_profile) && models::has_vision_model(&settings)
+}
+
+#[tauri::command]
+fn get_runtime_status(profile: Option<runtime::RuntimeProfile>) -> runtime::RuntimeStatus {
+    let settings = Settings::load();
+    let selected = profile.unwrap_or(settings.runtime_profile);
+    runtime::runtime_status(selected)
 }
 
 #[tauri::command]

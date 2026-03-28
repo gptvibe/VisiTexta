@@ -2,8 +2,12 @@ $ErrorActionPreference = 'Stop'
 
 $appRoot = Split-Path -Parent $PSScriptRoot
 $tauriRoot = Join-Path $appRoot 'src-tauri'
-$releaseRoot = Join-Path $tauriRoot 'target\release'
-$portableRoot = Join-Path $releaseRoot 'portable'
+$buildTarget = $env:CARGO_BUILD_TARGET
+$releaseRoots = @()
+if ($buildTarget) {
+  $releaseRoots += Join-Path $tauriRoot ("target\" + $buildTarget + "\release")
+}
+$releaseRoots += Join-Path $tauriRoot 'target\release'
 $configPath = Join-Path $tauriRoot 'tauri.conf.json'
 $config = Get-Content -Raw $configPath | ConvertFrom-Json
 $productName = $config.productName
@@ -16,10 +20,29 @@ try {
   Pop-Location
 }
 
-$exe = Get-ChildItem $releaseRoot -Filter *.exe |
-  Where-Object { $_.Name -notmatch 'setup|installer|uninstall|updater' } |
+$releaseRoot = $releaseRoots |
+  Where-Object { Test-Path $_ } |
+  Select-Object -First 1
+
+if (-not $releaseRoot) {
+  throw "Could not find a release output folder. Checked: $($releaseRoots -join ', ')"
+}
+
+$portableRoot = Join-Path $releaseRoot 'portable'
+
+$exeCandidates = Get-ChildItem $releaseRoot -Filter *.exe |
+  Where-Object { $_.Name -notmatch 'setup|installer|uninstall|updater|ocr_bench' }
+
+$exe = $exeCandidates |
+  Where-Object { $_.BaseName -in @('app', $productName) } |
   Sort-Object LastWriteTime -Descending |
   Select-Object -First 1
+
+if (-not $exe) {
+  $exe = $exeCandidates |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+}
 
 if (-not $exe) {
   throw "Could not find the built release executable in $releaseRoot"

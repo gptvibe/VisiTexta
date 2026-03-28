@@ -112,6 +112,20 @@ export type RunnerCompatibility = {
   notes: string
 }
 
+export type RuntimeProfile = 'auto' | 'cpu_compatible' | 'accelerated_if_available'
+
+export type RuntimeStatus = {
+  selected_profile: RuntimeProfile
+  safe_default_profile: RuntimeProfile
+  usable_runtime: boolean
+  cpu_runtime_available: boolean
+  accelerated_runtime_available: boolean
+  accelerated_runtime_compatible: boolean
+  accelerated_runtime_label?: string | null
+  effective_runtime_label: string
+  summary: string
+}
+
 export type ModelProfile = {
   id: string
   label: string

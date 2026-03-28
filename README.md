@@ -18,6 +18,7 @@ This repo currently targets Windows behavior explicitly.
 - Streams OCR text live in the app while processing.
 - Auto-downloads the default model on first run if no model is installed.
 - Uses a local runtime bundle in the release package.
+- Adds an optional runtime profile selector for CPU-compatible or accelerated local inference.
 - Produces cleaner OCR-first Markdown output.
 
 ## Supported files
@@ -66,6 +67,11 @@ This repo currently targets Windows behavior explicitly.
 ### What users see in the app
 
 - Settings now shows the exact storage mode and the exact paths for settings, history, models, and temp files.
+- Settings also shows the active local runtime profile:
+  `CPU compatible` is the safe default.
+  `Auto` prefers a compatible accelerated runtime when one is bundled and the PC looks compatible.
+  `Accelerated if available` tries the accelerated runtime first and falls back cleanly if it cannot start.
+- Acceleration changes speed only. OCR semantics stay tied to the same model, prompt, and preprocessing path.
 - OCR output files are still written next to the source file, not inside the app-data folder.
 
 ### First run behavior (important)
@@ -91,6 +97,8 @@ In short: initial delay is expected, then text should start flowing.
 VisiTexta 1.0.0/
   VisiTexta.exe
   bin/
+    accelerated/
+      vulkan/
   resources/
   portable-data/
 ```
@@ -115,7 +123,9 @@ VisiTexta 1.0.0/
 ## Troubleshooting
 
 - Error about missing runtime CLI:
-  Make sure `bin/llama-mtmd-cli.exe` and `bin/llama-cli.exe` exist.
+  Make sure `bin/llama-mtmd-cli.exe` and `bin/llama-server.exe` exist.
+- Accelerated runtime is unavailable or falls back to CPU:
+  Open Settings and switch back to `CPU compatible`, or leave the profile on `Auto`. Acceleration is optional and only affects speed.
 - Error about missing model:
   Open Settings and download one of the curated profiles (or let the GLM-OCR auto-download finish).
 - Error about missing `mmproj`:

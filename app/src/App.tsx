@@ -15,6 +15,8 @@ import type {
   JobStreamState,
   ModelCatalog,
   ModelDownloadEvent,
+  RuntimeProfile,
+  RuntimeStatus,
   RunnerMode,
   RunnerStage,
   StorageInfo,
@@ -25,6 +27,7 @@ type Settings = {
   threads: number
   dpi: number
   auto_open: boolean
+  runtime_profile: RuntimeProfile
   theme?: string | null
   model_profile_id?: string | null
   model_file?: string | null
@@ -60,6 +63,7 @@ const defaultSettings: Settings = {
   threads: 4,
   dpi: 300,
   auto_open: false,
+  runtime_profile: 'cpu_compatible',
   theme: 'dark',
   model_profile_id: null,
   model_file: null,
@@ -176,6 +180,17 @@ function formatBytes(value?: number | null) {
   return `${(mb / 1024).toFixed(2)} GB`
 }
 
+function runtimeProfileLabel(profile: RuntimeProfile) {
+  switch (profile) {
+    case 'auto':
+      return 'Auto'
+    case 'accelerated_if_available':
+      return 'Accelerated if available'
+    default:
+      return 'CPU compatible'
+  }
+}
+
 function buildRunnerMessage(
   mode: RunnerMode,
   stage: RunnerStage,
@@ -184,6 +199,11 @@ function buildRunnerMessage(
   willFallback?: boolean | null,
   backendMessage?: string | null
 ) {
+  const explicitMessage = backendMessage?.trim()
+  if (explicitMessage && stage !== 'FirstToken' && stage !== 'Chunk') {
+    return explicitMessage
+  }
+
   const pageLabel =
     pageNumber && totalPages ? `page ${pageNumber}/${totalPages}` : 'this file'
 
@@ -269,6 +289,7 @@ function App() {
   const [modelInput, setModelInput] = useState('')
   const [downloadState, setDownloadState] = useState<ModelDownloadState>(defaultDownloadState)
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null)
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null)
   const [prompt, setPrompt] = useState('')
   const [autoDownloadAttempted, setAutoDownloadAttempted] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -361,6 +382,9 @@ function App() {
     [selectedPreset, settings.dpi]
   )
 
+  const hasUsableRuntime = runtimeStatus?.usable_runtime ?? true
+  const runtimeSetupIssue = Boolean(runtimeStatus && !runtimeStatus.usable_runtime)
+
   const presetSummary = useMemo(() => {
     if (!selectedPreset) {
       return `Using advanced custom DPI (${settings.dpi}).`
@@ -407,6 +431,8 @@ function App() {
     Math.max(0, Math.round(downloadState.progress * 100))
   )
   const shouldAutoDownloadRecommended = useMemo(() => {
+    if (!hasUsableRuntime) return false
+
     const recommendedProfileId =
       onboardingInfo?.recommended_model_profile_id || DEFAULT_MODEL_PROFILE_ID
 
@@ -416,11 +442,14 @@ function App() {
   }, [
     explicitModelFile,
     explicitModelProfileId,
+    hasUsableRuntime,
     onboardingInfo?.recommended_model_profile_id,
   ])
 
   const missingModelMessage =
-    downloadState.status === 'error'
+    runtimeSetupIssue
+      ? runtimeStatus?.summary || 'A usable local OCR runtime was not found.'
+      : downloadState.status === 'error'
       ? downloadState.message ||
         (shouldAutoDownloadRecommended
           ? 'First-time setup needs another try in Advanced settings.'
@@ -430,7 +459,9 @@ function App() {
         : `${configuredModelLabel} is selected, but it is not ready yet.`
 
   const setupCardTitle =
-    downloadState.status === 'error'
+    runtimeSetupIssue
+      ? 'Local OCR runtime needs attention'
+      : downloadState.status === 'error'
       ? shouldAutoDownloadRecommended
         ? 'Recommended model download needs another try'
         : 'Selected model needs attention'
@@ -439,7 +470,10 @@ function App() {
         : `${configuredModelLabel} is not ready yet`
 
   const setupCardBody =
-    downloadState.status === 'error'
+    runtimeSetupIssue
+      ? runtimeStatus?.summary ||
+        'No usable local OCR runtime is bundled right now.'
+      : downloadState.status === 'error'
       ? downloadState.message ||
         (shouldAutoDownloadRecommended
           ? 'Open Advanced settings to retry the download.'
@@ -524,7 +558,11 @@ function App() {
 
   useEffect(() => {
     void refreshModelStatus()
-  }, [settings.model_file, settings.model_profile_id])
+  }, [settings.model_file, settings.model_profile_id, settings.runtime_profile])
+
+  useEffect(() => {
+    void loadRuntimeStatus(settings.runtime_profile)
+  }, [settings.runtime_profile])
 
   useEffect(() => {
     void loadModelCatalog()
@@ -538,13 +576,13 @@ function App() {
 
   useEffect(() => {
     if (settingsOpen) {
-      void loadModelCatalog()
+      void refreshLocalCatalog()
     }
   }, [settingsOpen])
 
   useEffect(() => {
     const handlePaste = (event: ClipboardEvent) => {
-      if (busy || modelMissing) return
+      if (busy) return
       const items = Array.from(event.clipboardData?.items ?? [])
       const imageItem = items.find((item) => item.type.startsWith('image/'))
       if (!imageItem) return
@@ -806,6 +844,16 @@ function App() {
     }
   }
 
+  async function loadRuntimeStatus(profile: RuntimeProfile = settings.runtime_profile) {
+    try {
+      const status = await invoke<RuntimeStatus>('get_runtime_status', { profile })
+      setRuntimeStatus(status)
+    } catch (err) {
+      console.error(err)
+      setRuntimeStatus(null)
+    }
+  }
+
   async function loadModelCatalog() {
     try {
       const catalog = await invoke<ModelCatalog>('get_model_catalog')
@@ -816,19 +864,28 @@ function App() {
     }
   }
 
+  async function refreshLocalCatalog() {
+    await Promise.all([loadModelCatalog(), loadRuntimeStatus(settings.runtime_profile)])
+  }
+
   async function handlePaths(paths: string[]) {
     if (!paths.length) return
     if (modelMissing) {
       const downloading = ['starting', 'downloading', 'verifying'].includes(downloadState.status)
+      const blockedByRuntime = runtimeSetupIssue
       setLog(
-        downloading
+        blockedByRuntime
+          ? runtimeStatus?.summary || 'A usable local OCR runtime is required before extraction can start.'
+          : downloading
           ? 'First-time setup is still downloading the OCR model.'
           : shouldAutoDownloadRecommended
             ? 'A local OCR model is required before extraction can start.'
             : `${configuredModelLabel} is selected, but it is not ready yet.`
       )
       enqueueToast(
-        downloading
+        blockedByRuntime
+          ? runtimeStatus?.summary || 'Add a local OCR runtime bundle before starting extraction.'
+          : downloading
           ? 'Setup is still downloading the OCR model.'
           : shouldAutoDownloadRecommended
             ? 'Open Advanced settings to retry the recommended model download.'
@@ -869,8 +926,11 @@ function App() {
   async function handlePastedImage(blob: Blob) {
     if (modelMissing) {
       const downloading = ['starting', 'downloading', 'verifying'].includes(downloadState.status)
+      const blockedByRuntime = runtimeSetupIssue
       enqueueToast(
-        downloading
+        blockedByRuntime
+          ? runtimeStatus?.summary || 'Add a local OCR runtime bundle before starting extraction.'
+          : downloading
           ? 'Wait for the recommended model download to finish before pasting an image.'
           : shouldAutoDownloadRecommended
             ? 'Open Advanced settings to finish setting up the recommended model first.'
@@ -1068,7 +1128,11 @@ function App() {
     try {
       await invoke('set_settings', { settings: next })
       enqueueToast('Settings saved.', 'success')
-      await refreshModelStatus()
+      await Promise.all([
+        refreshModelStatus(),
+        loadModelCatalog(),
+        loadRuntimeStatus(next.runtime_profile),
+      ])
     } catch (err) {
       console.error(err)
       enqueueToast('Failed to save settings.', 'error')
@@ -1106,7 +1170,7 @@ function App() {
         setLog('First-time setup is complete. Drop, paste, or choose a file to begin.')
       }
       setModelInput('')
-      await loadModelCatalog()
+      await refreshLocalCatalog()
       const next = {
         ...settings,
         model_profile_id: result.profile_id || null,
@@ -1250,11 +1314,15 @@ function App() {
                   </div>
                 </div>
                 <div className="setup-card-badge">
-                  {downloadState.status === 'error' ? 'Paused' : `${downloadProgressPercent}%`}
+                  {runtimeSetupIssue
+                    ? 'Runtime'
+                    : downloadState.status === 'error'
+                      ? 'Paused'
+                      : `${downloadProgressPercent}%`}
                 </div>
               </div>
               <div className="setup-card-copy">{setupCardBody}</div>
-              {downloadState.status !== 'error' && (
+              {!runtimeSetupIssue && downloadState.status !== 'error' && (
                 <div className="model-progress">
                   <div className="model-progress-bar">
                     <div
@@ -1350,6 +1418,11 @@ function App() {
                   <strong>{activeModelTitle}</strong>
                   <span>{activeModelSupportLabel}</span>
                 </div>
+                <div className="signal-card">
+                  <span>Runtime</span>
+                  <strong>{runtimeProfileLabel(settings.runtime_profile)}</strong>
+                  <span>{runtimeStatus?.effective_runtime_label || 'Checking local runtime...'}</span>
+                </div>
                 <div className="signal-card wide">
                   <span>Model storage</span>
                   <strong>{storageInfo?.models_path || onboardingInfo?.model_storage_path || 'Loading...'}</strong>
@@ -1392,13 +1465,14 @@ function App() {
         open={settingsOpen}
         settings={settings}
         modelCatalog={modelCatalog}
+        runtimeStatus={runtimeStatus}
         storageInfo={storageInfo}
         modelInput={modelInput}
         modelStoragePath={onboardingInfo?.model_storage_path || null}
         downloadState={downloadState}
         onModelInputChange={setModelInput}
         onDownloadModel={onDownloadModel}
-        onRefreshModels={loadModelCatalog}
+        onRefreshModels={refreshLocalCatalog}
         onClose={() => setSettingsOpen(false)}
         onSave={handleSettingsSave}
       />

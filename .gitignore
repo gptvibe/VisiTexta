@@ -1,2 +1,4 @@
 release/
+artifacts/
+tmp/
 app/benchmarks/out/

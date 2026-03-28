@@ -4,11 +4,14 @@ Desktop app package for VisiTexta 1.0.0 (Tauri + React + Rust).
 
 ## Runtime architecture (1.0.0)
 - Model-only OCR path via local llama runtime binaries.
+- CPU-compatible runtime remains the safe default path.
+- Optional accelerated bundles can be placed beside it and selected in Settings.
 - Vision GGUF model required in `models/`.
 - For GLM-OCR, Qwen-VL, and LLaVA-family models, a matching `mmproj` file is required.
 - OCR work runs off the command handler path to keep UI responsiveness under load.
 - OCR text is streamed progressively into the preview while processing each page.
 - PDFs are rendered locally through PDFium before page-by-page OCR.
+- Runtime profile changes speed only. OCR semantics stay bound to the same model, prompt, and preprocessing pipeline.
 
 ## Run in development
 ```bash
@@ -24,8 +27,12 @@ npm run tauri:build
 
 ## Required local files
 - `src-tauri/bin/`:
-  - `llama-mtmd-cli.exe` (or compatible runner)
-  - required llama/ggml DLLs
+  - `llama-mtmd-cli.exe`
+  - `llama-server.exe`
+  - required llama/ggml/PDFium DLLs
+- Optional accelerated runtime bundle:
+  - `src-tauri/bin/accelerated/vulkan/`
+  - matching `llama-mtmd-cli.exe`, `llama-server.exe`, and Vulkan runtime DLLs
 - `models/` is created automatically when the user downloads a model from Settings.
 
 ## Notes

@@ -1,5 +1,6 @@
 use crate::errors::{PipelineError, Result};
 use crate::events::RunnerMode;
+use crate::runtime::{RuntimeBackend, RuntimeExecutable, RuntimeExecutionPlan, RuntimeProfile};
 use base64::Engine;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -74,8 +75,7 @@ pub enum OcrStreamEvent {
 
 #[derive(Clone)]
 pub struct LlmOcrEngine {
-    runner_paths: Vec<PathBuf>,
-    server_paths: Vec<PathBuf>,
+    runtime_plan: RuntimeExecutionPlan,
     mmproj_path: Option<PathBuf>,
     model_path: PathBuf,
     threads: u16,
@@ -122,7 +122,7 @@ struct StreamingSanitizer {
 }
 
 impl LlmOcrEngine {
-    pub fn new(model_path: PathBuf, threads: u16) -> Result<Self> {
+    pub fn new(model_path: PathBuf, threads: u16, runtime_profile: RuntimeProfile) -> Result<Self> {
         if !model_path.exists() {
             return Err(PipelineError::Llm(format!(
                 "model file not found: {}",
@@ -133,17 +133,15 @@ impl LlmOcrEngine {
         let runtime_requirements = crate::models::resolve_runtime_model_requirements(&model_path)
             .map_err(|err| PipelineError::Llm(err.to_string()))?;
 
-        let runner_paths = resolve_runner_exes(cli_runner_names());
-        let server_paths = resolve_runner_exes(server_runner_names());
-        if runner_paths.is_empty() && server_paths.is_empty() {
+        let runtime_plan = crate::runtime::resolve_execution_plan(runtime_profile);
+        if runtime_plan.cli_runtimes.is_empty() && runtime_plan.server_runtimes.is_empty() {
             return Err(PipelineError::Llm(
                 "no multimodal-compatible llama runtime found".into(),
             ));
         }
 
         Ok(Self {
-            runner_paths,
-            server_paths,
+            runtime_plan,
             mmproj_path: runtime_requirements.mmproj_path,
             model_path,
             threads,
@@ -164,9 +162,9 @@ impl LlmOcrEngine {
             prompt.trim()
         );
 
-        if let Some(server_path) = self.server_paths.first() {
+        for (index, runtime) in self.runtime_plan.server_runtimes.iter().enumerate() {
             let config = WorkerConfig {
-                runner_path: server_path.clone(),
+                runner_path: runtime.path.clone(),
                 model_path: self.model_path.clone(),
                 mmproj_path: self.mmproj_path.clone(),
                 threads: self.threads.max(1),
@@ -179,32 +177,40 @@ impl LlmOcrEngine {
 
             if should_try_persistent {
                 let mut manager = PERSISTENT_WORKERS.lock();
-                match manager.recognize(config, image_path, &effective_prompt, &mut on_event) {
+                let will_fallback = index + 1 < self.runtime_plan.server_runtimes.len()
+                    || !self.runtime_plan.cli_runtimes.is_empty();
+                match manager.recognize(
+                    config,
+                    image_path,
+                    &effective_prompt,
+                    &runtime.label,
+                    &mut on_event,
+                ) {
                     Ok(output) => return Ok(output),
                     Err(err) => on_event(OcrStreamEvent::RunnerError {
                         mode: RunnerMode::Persistent,
-                        message: err.to_string(),
-                        will_fallback: !self.runner_paths.is_empty(),
+                        message: format_runtime_failure_message(runtime, &err, will_fallback),
+                        will_fallback,
                     }),
-                }
+                };
             }
         }
 
         let mut last_error: Option<PipelineError> = None;
 
-        for (index, runner) in self.runner_paths.iter().enumerate() {
+        for (index, runtime) in self.runtime_plan.cli_runtimes.iter().enumerate() {
             match self.try_recognize_with_runner(
-                runner,
+                runtime,
                 image_path,
                 &effective_prompt,
                 &mut on_event,
             ) {
                 Ok(output) => return Ok(output),
                 Err(err) => {
-                    let will_fallback = index + 1 < self.runner_paths.len();
+                    let will_fallback = index + 1 < self.runtime_plan.cli_runtimes.len();
                     on_event(OcrStreamEvent::RunnerError {
                         mode: RunnerMode::Transient,
-                        message: err.to_string(),
+                        message: format_runtime_failure_message(runtime, &err, will_fallback),
                         will_fallback,
                     });
                     last_error = Some(err);
@@ -219,7 +225,7 @@ impl LlmOcrEngine {
 
     fn try_recognize_with_runner<F>(
         &self,
-        runner: &Path,
+        runtime: &RuntimeExecutable,
         image_path: &Path,
         effective_prompt: &str,
         on_event: &mut F,
@@ -229,10 +235,10 @@ impl LlmOcrEngine {
     {
         on_event(OcrStreamEvent::WorkerStarting {
             mode: RunnerMode::Transient,
-            message: format!("Launching {}", runner.to_string_lossy()),
+            message: format!("Starting {} OCR runtime.", runtime.label),
         });
 
-        let mut cmd = Command::new(runner);
+        let mut cmd = Command::new(&runtime.path);
         cmd.arg("-m")
             .arg(&self.model_path)
             .arg("--image")
@@ -263,13 +269,13 @@ impl LlmOcrEngine {
         let mut child = cmd.spawn().map_err(|e| {
             PipelineError::Llm(format!(
                 "spawn failed for {}: {e}",
-                runner.to_string_lossy()
+                runtime.path.to_string_lossy()
             ))
         })?;
 
         on_event(OcrStreamEvent::ModelReady {
             mode: RunnerMode::Transient,
-            message: format!("Runner started: {}", runner.to_string_lossy()),
+            message: format!("{} runtime is ready.", runtime.label),
         });
 
         let stdout = child
@@ -353,7 +359,7 @@ impl LlmOcrEngine {
             };
             return Err(PipelineError::Llm(format!(
                 "{} exited with {}: {}",
-                runner.to_string_lossy(),
+                runtime.path.to_string_lossy(),
                 status,
                 detail
             )));
@@ -369,7 +375,7 @@ impl LlmOcrEngine {
             };
             return Err(PipelineError::Llm(format!(
                 "{} produced empty output. This usually means the runtime invocation is incompatible.{}",
-                runner.to_string_lossy(),
+                runtime.path.to_string_lossy(),
                 detail
             )));
         }
@@ -391,6 +397,7 @@ impl PersistentWorkerManager {
         config: WorkerConfig,
         image_path: &Path,
         prompt: &str,
+        runtime_label: &str,
         on_event: &mut F,
     ) -> Result<String>
     where
@@ -402,16 +409,16 @@ impl PersistentWorkerManager {
             ));
         }
 
-        let started_now = self.ensure_worker(&config, on_event)?;
+        let started_now = self.ensure_worker(&config, runtime_label, on_event)?;
         let worker = self
             .current
             .as_mut()
             .ok_or_else(|| PipelineError::Llm("persistent OCR worker is unavailable".into()))?;
 
         let ready_message = if started_now {
-            "Persistent OCR worker is ready".to_string()
+            format!("{runtime_label} runtime is ready.")
         } else {
-            "Reusing warm OCR worker".to_string()
+            format!("Reusing warm {runtime_label} runtime.")
         };
         on_event(OcrStreamEvent::ModelReady {
             mode: RunnerMode::Persistent,
@@ -428,7 +435,12 @@ impl PersistentWorkerManager {
         result
     }
 
-    fn ensure_worker<F>(&mut self, config: &WorkerConfig, on_event: &mut F) -> Result<bool>
+    fn ensure_worker<F>(
+        &mut self,
+        config: &WorkerConfig,
+        runtime_label: &str,
+        on_event: &mut F,
+    ) -> Result<bool>
     where
         F: FnMut(OcrStreamEvent),
     {
@@ -448,7 +460,7 @@ impl PersistentWorkerManager {
             self.shutdown_current_worker();
         }
 
-        let worker = PersistentWorker::spawn(config.clone(), on_event)?;
+        let worker = PersistentWorker::spawn(config.clone(), runtime_label, on_event)?;
         self.current = Some(worker);
         Ok(true)
     }
@@ -466,16 +478,13 @@ impl PersistentWorkerManager {
 }
 
 impl PersistentWorker {
-    fn spawn<F>(config: WorkerConfig, on_event: &mut F) -> Result<Self>
+    fn spawn<F>(config: WorkerConfig, runtime_label: &str, on_event: &mut F) -> Result<Self>
     where
         F: FnMut(OcrStreamEvent),
     {
         on_event(OcrStreamEvent::WorkerStarting {
             mode: RunnerMode::Persistent,
-            message: format!(
-                "Starting warm OCR worker via {}",
-                config.runner_path.to_string_lossy()
-            ),
+            message: format!("Starting warm {runtime_label} OCR worker."),
         });
 
         let port = reserve_local_port()?;
@@ -819,35 +828,28 @@ impl StreamingSanitizer {
     }
 }
 
-pub fn runtime_has_ocr_runner() -> bool {
-    !resolve_runner_exes(cli_runner_names()).is_empty()
-        || !resolve_runner_exes(server_runner_names()).is_empty()
-}
-
 pub fn shutdown_persistent_worker() {
     let mut manager = PERSISTENT_WORKERS.lock();
     manager.reset();
 }
 
-fn cli_runner_names() -> &'static [&'static str] {
-    #[cfg(target_os = "windows")]
-    {
-        &["llama-mtmd-cli.exe", "llama-cli.exe"]
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        &["llama-mtmd-cli", "llama-cli"]
-    }
-}
-
-fn server_runner_names() -> &'static [&'static str] {
-    #[cfg(target_os = "windows")]
-    {
-        &["llama-server.exe"]
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        &["llama-server"]
+fn format_runtime_failure_message(
+    runtime: &RuntimeExecutable,
+    err: &PipelineError,
+    will_fallback: bool,
+) -> String {
+    if runtime.backend != RuntimeBackend::CpuCompatible && will_fallback {
+        format!(
+            "{} runtime could not continue. Trying the next local runtime. {}",
+            runtime.label, err
+        )
+    } else if will_fallback {
+        format!(
+            "{} runtime could not continue. Trying the next compatible local runtime. {}",
+            runtime.label, err
+        )
+    } else {
+        format!("{} runtime could not continue: {}", runtime.label, err)
     }
 }
 
@@ -1027,33 +1029,4 @@ fn should_hold_partial_output_line(line: &str) -> bool {
     }
 
     trimmed.chars().all(|c| matches!(c, '▄' | '▀' | '█' | ' '))
-}
-
-fn resolve_runner_exes(names: &[&str]) -> Vec<PathBuf> {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
-
-    let mut found = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    for name in names {
-        let candidates = [
-            exe_dir.as_ref().map(|p| p.join("bin").join(name)),
-            exe_dir
-                .as_ref()
-                .map(|p| p.join("resources").join("bin").join(name)),
-            exe_dir.as_ref().map(|p| p.join(name)),
-            Some(PathBuf::from("src-tauri").join("bin").join(name)),
-            Some(PathBuf::from(name)),
-        ];
-
-        for candidate in candidates.iter().flatten() {
-            if candidate.exists() && seen.insert(candidate.clone()) {
-                found.push(candidate.to_path_buf());
-            }
-        }
-    }
-
-    found
 }

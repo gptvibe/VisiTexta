@@ -15,7 +15,6 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use regex::Regex;
 use std::collections::HashMap;
-use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -176,7 +175,7 @@ pub(crate) fn process_batch_with_observer(
 ) -> Result<Vec<JobResult>> {
     let mut results = Vec::with_capacity(paths.len());
     let model_path = crate::models::resolve_active_vision_model_path(settings)?;
-    let ocr = LlmOcrEngine::new(model_path, settings.threads)?;
+    let ocr = LlmOcrEngine::new(model_path, settings.threads, settings.runtime_profile)?;
     let effective_prompt = prompt
         .as_deref()
         .map(str::trim)
