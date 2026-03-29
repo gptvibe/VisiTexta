@@ -1,18 +1,24 @@
 {
   "name": "app",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "benchmark": "cargo run --manifest-path src-tauri/Cargo.toml --bin ocr_bench --",
+    "benchmark:gate:cold": "cargo run --manifest-path src-tauri/Cargo.toml --bin ocr_bench -- --prewarm off --baseline-report benchmarks/baselines/cold.json --gate-config benchmarks/gate.json",
+    "benchmark:gate:warm": "cargo run --manifest-path src-tauri/Cargo.toml --bin ocr_bench -- --prewarm on --baseline-report benchmarks/baselines/warm.json --gate-config benchmarks/gate.json",
     "lint": "eslint .",
     "preview": "vite preview",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build --bundles msi,nsis",
-    "tauri:build:installer": "tauri build --bundles msi,nsis",
-    "tauri:build:portable": "powershell -ExecutionPolicy Bypass -File ./scripts/package-portable.ps1"
+    "release:qa": "powershell -ExecutionPolicy Bypass -File ./scripts/release-qa.ps1",
+    "tauri:build": "npm run release:qa && npm run tauri:build:unsafe",
+    "tauri:build:unsafe": "tauri build --bundles msi,nsis",
+    "tauri:build:installer": "npm run release:qa && npm run tauri:build:installer:unsafe",
+    "tauri:build:installer:unsafe": "tauri build --bundles msi,nsis",
+    "tauri:build:portable": "npm run release:qa && npm run tauri:build:portable:unsafe",
+    "tauri:build:portable:unsafe": "powershell -ExecutionPolicy Bypass -File ./scripts/package-portable.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",

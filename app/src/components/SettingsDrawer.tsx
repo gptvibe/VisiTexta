@@ -325,6 +325,20 @@ export function SettingsDrawer({
             />
             <span>Auto-open output folder</span>
           </label>
+          <label className="field checkbox">
+            <input
+              type="checkbox"
+              checked={draft.idle_model_prewarm}
+              onChange={(event) =>
+                setDraft({ ...draft, idle_model_prewarm: event.target.checked })
+              }
+            />
+            <span>Prewarm the local OCR engine after model changes</span>
+          </label>
+          <div className="field-note">
+            When enabled, VisiTexta quietly starts the warm OCR worker a few seconds after you
+            install or switch models so the next extraction reaches first text sooner.
+          </div>
           <label className="field">
             <span>Theme</span>
             <select

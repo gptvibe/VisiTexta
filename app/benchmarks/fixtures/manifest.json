@@ -12,12 +12,44 @@
       "tags": ["image", "starter"]
     },
     {
+      "id": "image-note-low-end",
+      "name": "Image Note (Starter preset)",
+      "description": "Single PNG routed through the low-end Starter preset to watch CPU-safe TTFT and memory behavior.",
+      "input": "inputs/sample-note.png",
+      "expected_output": "expected/sample-note.md",
+      "dpi": 200,
+      "run_options": {
+        "runtime_profile": "cpu_compatible",
+        "max_ocr_dimension": 1200,
+        "lazy_preview_thumbnails": true,
+        "disable_rich_preview_for_large_jobs": true,
+        "large_job_page_threshold": 12
+      },
+      "tags": ["image", "starter", "low-end"]
+    },
+    {
       "id": "pdf-two-page",
       "name": "Two Page PDF",
       "description": "Two-page PDF to exercise PDF rendering, page previews, and page-header normalization.",
       "input": "inputs/sample-brief.pdf",
       "expected_output": "expected/sample-brief.md",
       "tags": ["pdf", "starter", "multi-page"]
+    },
+    {
+      "id": "pdf-two-page-starter-scan",
+      "name": "Two Page Scan (Starter preset)",
+      "description": "Two-page scan run with the low-end preset so release QA catches regressions on thinner laptops and multi-page jobs.",
+      "input": "inputs/sample-brief.pdf",
+      "expected_output": "expected/sample-brief.md",
+      "dpi": 200,
+      "run_options": {
+        "runtime_profile": "cpu_compatible",
+        "max_ocr_dimension": 1200,
+        "lazy_preview_thumbnails": true,
+        "disable_rich_preview_for_large_jobs": true,
+        "large_job_page_threshold": 12
+      },
+      "tags": ["pdf", "scan", "multi-page", "low-end"]
     }
   ]
 }

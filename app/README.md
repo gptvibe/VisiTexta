@@ -1,8 +1,8 @@
 # VisiTexta App
 
-Desktop app package for VisiTexta 1.0.0 (Tauri + React + Rust).
+Desktop app package for VisiTexta 2.0.0 (Tauri + React + Rust).
 
-## Runtime architecture (1.0.0)
+## Runtime architecture (2.0.0)
 - Model-only OCR path via local llama runtime binaries.
 - CPU-compatible runtime remains the safe default path.
 - Optional accelerated bundles can be placed beside it and selected in Settings.

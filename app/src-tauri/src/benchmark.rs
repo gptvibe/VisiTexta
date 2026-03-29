@@ -10,7 +10,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 const DEFAULT_OUTPUT_SUBDIR: &str = "out";
 const DEFAULT_FIXTURE_SUBDIR: &str = "fixtures";
+const DEFAULT_GATE_CONFIG_FILE: &str = "gate.json";
 const LATEST_REPORT_FILE: &str = "latest.json";
 const MEMORY_SAMPLE_INTERVAL_MS: u64 = 75;
 
@@ -31,9 +32,47 @@ const MEMORY_SAMPLE_INTERVAL_MS: u64 = 75;
 struct CliOptions {
     manifest_path: Option<PathBuf>,
     output_dir: Option<PathBuf>,
+    baseline_report_path: Option<PathBuf>,
+    gate_config_path: Option<PathBuf>,
     filter: Option<String>,
     bless: bool,
     list_only: bool,
+    prewarm: BenchmarkPrewarmMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchmarkPrewarmMode {
+    Off,
+    On,
+}
+
+impl Default for BenchmarkPrewarmMode {
+    fn default() -> Self {
+        Self::Off
+    }
+}
+
+impl Default for RegressionGateConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: default_schema_version(),
+            notes: Vec::new(),
+            thresholds: RegressionThresholds::default(),
+        }
+    }
+}
+
+impl Default for RegressionThresholds {
+    fn default() -> Self {
+        Self {
+            time_to_first_text_ms: 400,
+            time_to_first_text_pct: 0.20,
+            total_time_ms: 1200,
+            total_time_pct: 0.20,
+            peak_memory_bytes: 3 * 1024 * 1024 * 1024,
+            peak_memory_pct: 0.30,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,10 +101,12 @@ struct FixtureDefinition {
     #[serde(default)]
     dpi: Option<u16>,
     #[serde(default)]
+    run_options: Option<pipeline::PipelineRunOptions>,
+    #[serde(default)]
     tags: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct BenchmarkReport {
     schema_version: u16,
     run_id: String,
@@ -75,23 +116,26 @@ struct BenchmarkReport {
     output_root: String,
     suite_name: Option<String>,
     suite_description: Option<String>,
+    notes: Vec<String>,
     normalization_rules: Vec<String>,
     settings: ReportSettings,
     summary: ReportSummary,
     cases: Vec<CaseReport>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ReportSettings {
     working_directory: String,
     model_file: Option<String>,
+    idle_model_prewarm: bool,
+    benchmark_prewarm_mode: String,
     threads: u16,
     default_dpi: u16,
     default_prompt: String,
     debug_assertions: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ReportSummary {
     fixture_count: usize,
     success_count: usize,
@@ -104,7 +148,7 @@ struct ReportSummary {
     max_normalized_output_diff: Option<f64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct CaseReport {
     id: String,
     name: String,
@@ -116,6 +160,7 @@ struct CaseReport {
     actual_output_file: Option<String>,
     prompt: Option<String>,
     dpi: u16,
+    run_options: Option<pipeline::PipelineRunOptions>,
     tags: Vec<String>,
     status: String,
     error: Option<String>,
@@ -124,7 +169,7 @@ struct CaseReport {
     metrics: CaseMetrics,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct CaseMetrics {
     time_to_first_preview_ms: Option<u64>,
     time_to_first_text_ms: Option<u64>,
@@ -152,6 +197,31 @@ struct BenchmarkObserver {
     first_text_ms: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+struct RegressionGateConfig {
+    schema_version: u16,
+    notes: Vec<String>,
+    thresholds: RegressionThresholds,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+struct RegressionThresholds {
+    time_to_first_text_ms: u64,
+    time_to_first_text_pct: f64,
+    total_time_ms: u64,
+    total_time_pct: f64,
+    peak_memory_bytes: u64,
+    peak_memory_pct: f64,
+}
+
+#[derive(Debug, Default)]
+struct RegressionGateOutcome {
+    failures: Vec<String>,
+    warnings: Vec<String>,
+}
+
 pub fn run_cli<I>(args: I) -> Result<()>
 where
     I: IntoIterator<Item = String>,
@@ -165,6 +235,10 @@ where
     let output_root = cli
         .output_dir
         .unwrap_or_else(|| benchmark_root.join(DEFAULT_OUTPUT_SUBDIR));
+    let gate_config_path = cli
+        .gate_config_path
+        .clone()
+        .unwrap_or_else(|| benchmark_root.join(DEFAULT_GATE_CONFIG_FILE));
 
     runtime::hydrate_path_for_binaries();
 
@@ -213,6 +287,7 @@ where
             &run_output_dir,
             &fixture,
             cli.bless,
+            cli.prewarm,
         )?;
         print_case_summary(&case_report);
         case_reports.push(case_report);
@@ -228,6 +303,7 @@ where
         output_root: output_root.to_string_lossy().into_owned(),
         suite_name,
         suite_description,
+        notes: benchmark_notes(cli.prewarm),
         normalization_rules: vec![
             "Collapse all whitespace runs to a single space.".into(),
             "Strip injected page headers like `## Page N` or `Page N of M`.".into(),
@@ -239,6 +315,8 @@ where
                 .to_string_lossy()
                 .into_owned(),
             model_file: settings.model_file.clone(),
+            idle_model_prewarm: settings.idle_model_prewarm,
+            benchmark_prewarm_mode: cli.prewarm.as_str().into(),
             threads: settings.threads,
             default_dpi: settings.dpi,
             default_prompt: DEFAULT_PROMPT_TEXT.into(),
@@ -260,6 +338,36 @@ where
     println!("Benchmark suite complete.");
     println!("Report: {}", report_path.display());
     println!("Latest: {}", latest_path.display());
+
+    if let Some(baseline_report_path) = cli.baseline_report_path.as_deref() {
+        let baseline = load_report(baseline_report_path)?;
+        let gate_config = if gate_config_path.exists() {
+            load_gate_config(&gate_config_path)?
+        } else {
+            RegressionGateConfig::default()
+        };
+        let gate = evaluate_regression_gate(&report, &baseline, &gate_config);
+
+        for warning in &gate.warnings {
+            println!("Gate warning: {warning}");
+        }
+
+        if gate.failures.is_empty() {
+            println!(
+                "Regression gate passed against {}.",
+                baseline_report_path.display()
+            );
+        } else {
+            println!(
+                "Regression gate failed against {}.",
+                baseline_report_path.display()
+            );
+            for failure in &gate.failures {
+                println!("  - {failure}");
+            }
+            bail!("benchmark regressions exceeded configured thresholds");
+        }
+    }
 
     Ok(())
 }
@@ -285,6 +393,18 @@ where
                     .ok_or_else(|| anyhow!("--output-dir requires a path"))?;
                 cli.output_dir = Some(PathBuf::from(value));
             }
+            "--baseline-report" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| anyhow!("--baseline-report requires a path"))?;
+                cli.baseline_report_path = Some(PathBuf::from(value));
+            }
+            "--gate-config" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| anyhow!("--gate-config requires a path"))?;
+                cli.gate_config_path = Some(PathBuf::from(value));
+            }
             "--filter" => {
                 let value = iter
                     .next()
@@ -293,6 +413,12 @@ where
             }
             "--bless" => cli.bless = true,
             "--list" => cli.list_only = true,
+            "--prewarm" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| anyhow!("--prewarm requires `on` or `off`"))?;
+                cli.prewarm = BenchmarkPrewarmMode::parse(&value)?;
+            }
             "--help" | "-h" => {
                 print_help();
                 std::process::exit(0);
@@ -313,9 +439,12 @@ fn print_help() {
     println!("Options:");
     println!("  --manifest <path>   Override the fixture manifest path.");
     println!("  --output-dir <path> Override the benchmark output directory.");
+    println!("  --baseline-report <path> Compare the run against a saved benchmark report and fail on regressions.");
+    println!("  --gate-config <path> Override regression thresholds (defaults to benchmarks/gate.json).");
     println!("  --filter <value>    Run only fixtures whose id or name contains the value.");
     println!("  --bless             Update expected outputs with the current OCR markdown.");
     println!("  --list              List available fixtures without running OCR.");
+    println!("  --prewarm <mode>    Measure cold (`off`) or prewarmed (`on`) TTFT behavior.");
 }
 
 fn default_benchmark_root() -> PathBuf {
@@ -376,6 +505,7 @@ fn run_case(
     run_output_dir: &Path,
     fixture: &FixtureDefinition,
     bless: bool,
+    prewarm: BenchmarkPrewarmMode,
 ) -> Result<CaseReport> {
     let input_path = fixtures_root.join(&fixture.input);
     if !input_path.exists() {
@@ -397,6 +527,14 @@ fn run_case(
         .map(|relative| fixtures_root.join(relative));
     let dpi = fixture.dpi.unwrap_or(settings.dpi);
 
+    match prewarm {
+        BenchmarkPrewarmMode::Off => crate::llm::shutdown_persistent_worker(),
+        BenchmarkPrewarmMode::On => {
+            crate::llm::shutdown_persistent_worker();
+            crate::llm::prewarm_persistent_worker(settings)?;
+        }
+    }
+
     let observer_started = Instant::now();
     let mut observer = BenchmarkObserver::new(observer_started);
     let memory_sampler = MemorySampler::start(std::process::id());
@@ -405,7 +543,7 @@ fn run_case(
         settings,
         dpi,
         fixture.prompt.clone(),
-        None,
+        fixture.run_options.clone(),
         &mut observer,
     );
     let peak_memory_bytes = memory_sampler.finish();
@@ -446,6 +584,7 @@ fn run_case(
             .map(|path| path.to_string_lossy().into_owned()),
         prompt: fixture.prompt.clone(),
         dpi,
+        run_options: fixture.run_options.clone(),
         tags: fixture.tags.clone(),
         status: artifacts.status,
         error: artifacts.error,
@@ -640,6 +779,247 @@ fn build_summary(cases: &[CaseReport]) -> ReportSummary {
     }
 }
 
+fn load_report(path: &Path) -> Result<BenchmarkReport> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("failed to parse {}", path.display()))
+}
+
+fn load_gate_config(path: &Path) -> Result<RegressionGateConfig> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let config: RegressionGateConfig = serde_json::from_slice(&bytes)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+
+    if config.schema_version != default_schema_version() {
+        bail!(
+            "gate config {} has unsupported schema_version {}",
+            path.display(),
+            config.schema_version
+        );
+    }
+
+    Ok(config)
+}
+
+fn evaluate_regression_gate(
+    current: &BenchmarkReport,
+    baseline: &BenchmarkReport,
+    config: &RegressionGateConfig,
+) -> RegressionGateOutcome {
+    let mut outcome = RegressionGateOutcome::default();
+    let baseline_cases = baseline
+        .cases
+        .iter()
+        .map(|case| (case.id.as_str(), case))
+        .collect::<HashMap<_, _>>();
+    let current_case_ids = current
+        .cases
+        .iter()
+        .map(|case| case.id.as_str())
+        .collect::<HashSet<_>>();
+
+    for baseline_case in &baseline.cases {
+        if !current_case_ids.contains(baseline_case.id.as_str()) {
+            outcome.failures.push(format!(
+                "baseline fixture `{}` is missing from the current run; refresh the manifest or baseline before gating releases",
+                baseline_case.id
+            ));
+        }
+    }
+
+    for current_case in &current.cases {
+        let Some(baseline_case) = baseline_cases.get(current_case.id.as_str()) else {
+            outcome.failures.push(format!(
+                "current fixture `{}` is not present in the baseline report; refresh the saved baseline before gating releases",
+                current_case.id
+            ));
+            continue;
+        };
+
+        if baseline_case.status != "ok" {
+            outcome.failures.push(format!(
+                "baseline fixture `{}` is not healthy (`{}`); refresh the baseline before using it as a gate",
+                baseline_case.id, baseline_case.status
+            ));
+            continue;
+        }
+
+        if current_case.status != "ok" {
+            outcome.failures.push(format!(
+                "fixture `{}` failed in the current run (`{}`)",
+                current_case.id, current_case.status
+            ));
+            continue;
+        }
+
+        compare_optional_metric_u64(
+            &mut outcome,
+            &current_case.id,
+            "time-to-first-text",
+            current_case.metrics.time_to_first_text_ms,
+            baseline_case.metrics.time_to_first_text_ms,
+            config.thresholds.time_to_first_text_ms,
+            config.thresholds.time_to_first_text_pct,
+            format_duration,
+        );
+        compare_metric_u64(
+            &mut outcome,
+            &current_case.id,
+            "total-time",
+            current_case.metrics.total_time_ms,
+            baseline_case.metrics.total_time_ms,
+            config.thresholds.total_time_ms,
+            config.thresholds.total_time_pct,
+            format_duration,
+        );
+        compare_optional_metric_u64(
+            &mut outcome,
+            &current_case.id,
+            "peak-memory",
+            current_case.metrics.peak_memory_bytes,
+            baseline_case.metrics.peak_memory_bytes,
+            config.thresholds.peak_memory_bytes,
+            config.thresholds.peak_memory_pct,
+            format_bytes,
+        );
+    }
+
+    compare_optional_metric_f64(
+        &mut outcome,
+        "suite-summary",
+        "average-time-to-first-text",
+        current.summary.average_time_to_first_text_ms,
+        baseline.summary.average_time_to_first_text_ms,
+        config.thresholds.time_to_first_text_ms as f64,
+        config.thresholds.time_to_first_text_pct,
+        format_duration_f64,
+    );
+    compare_optional_metric_f64(
+        &mut outcome,
+        "suite-summary",
+        "average-total-time",
+        current.summary.average_total_time_ms,
+        baseline.summary.average_total_time_ms,
+        config.thresholds.total_time_ms as f64,
+        config.thresholds.total_time_pct,
+        format_duration_f64,
+    );
+    compare_optional_metric_u64(
+        &mut outcome,
+        "suite-summary",
+        "max-peak-memory",
+        current.summary.max_peak_memory_bytes,
+        baseline.summary.max_peak_memory_bytes,
+        config.thresholds.peak_memory_bytes,
+        config.thresholds.peak_memory_pct,
+        format_bytes,
+    );
+
+    for note in &config.notes {
+        outcome.warnings.push(note.clone());
+    }
+
+    outcome
+}
+
+fn compare_metric_u64(
+    outcome: &mut RegressionGateOutcome,
+    scope: &str,
+    metric: &str,
+    current: u64,
+    baseline: u64,
+    absolute_tolerance: u64,
+    percent_tolerance: f64,
+    formatter: fn(u64) -> String,
+) {
+    if let Some(allowed_regression) =
+        allowed_regression_u64(baseline, absolute_tolerance, percent_tolerance)
+    {
+        let ceiling = baseline.saturating_add(allowed_regression);
+        if current > ceiling {
+            outcome.failures.push(format!(
+                "{scope} {metric} regressed to {} from {} (allowed up to {})",
+                formatter(current),
+                formatter(baseline),
+                formatter(ceiling)
+            ));
+        }
+    }
+}
+
+fn compare_optional_metric_u64(
+    outcome: &mut RegressionGateOutcome,
+    scope: &str,
+    metric: &str,
+    current: Option<u64>,
+    baseline: Option<u64>,
+    absolute_tolerance: u64,
+    percent_tolerance: f64,
+    formatter: fn(u64) -> String,
+) {
+    match (current, baseline) {
+        (Some(current), Some(baseline)) => compare_metric_u64(
+            outcome,
+            scope,
+            metric,
+            current,
+            baseline,
+            absolute_tolerance,
+            percent_tolerance,
+            formatter,
+        ),
+        (None, Some(_)) => outcome.warnings.push(format!(
+            "{scope} {metric} was unavailable in the current run and was skipped"
+        )),
+        (Some(_), None) => outcome.warnings.push(format!(
+            "{scope} {metric} is missing from the baseline report and was skipped"
+        )),
+        (None, None) => {}
+    }
+}
+
+fn compare_optional_metric_f64(
+    outcome: &mut RegressionGateOutcome,
+    scope: &str,
+    metric: &str,
+    current: Option<f64>,
+    baseline: Option<f64>,
+    absolute_tolerance: f64,
+    percent_tolerance: f64,
+    formatter: fn(f64) -> String,
+) {
+    match (current, baseline) {
+        (Some(current), Some(baseline)) => {
+            let allowed_regression =
+                absolute_tolerance.max((baseline * percent_tolerance).ceil().max(0.0));
+            let ceiling = baseline + allowed_regression;
+            if current > ceiling {
+                outcome.failures.push(format!(
+                    "{scope} {metric} regressed to {} from {} (allowed up to {})",
+                    formatter(current),
+                    formatter(baseline),
+                    formatter(ceiling)
+                ));
+            }
+        }
+        (None, Some(_)) => outcome.warnings.push(format!(
+            "{scope} {metric} was unavailable in the current run and was skipped"
+        )),
+        (Some(_), None) => outcome.warnings.push(format!(
+            "{scope} {metric} is missing from the baseline report and was skipped"
+        )),
+        (None, None) => {}
+    }
+}
+
+fn allowed_regression_u64(baseline: u64, absolute_tolerance: u64, percent_tolerance: f64) -> Option<u64> {
+    if !percent_tolerance.is_finite() || percent_tolerance.is_sign_negative() {
+        return None;
+    }
+
+    let relative_tolerance = (baseline as f64 * percent_tolerance).ceil().max(0.0) as u64;
+    Some(absolute_tolerance.max(relative_tolerance))
+}
+
 fn average_optional_u64(values: &[Option<u64>]) -> Option<f64> {
     let present: Vec<u64> = values.iter().copied().flatten().collect();
     if present.is_empty() {
@@ -668,6 +1048,10 @@ fn print_case_summary(case: &CaseReport) {
 
 fn format_duration(value: u64) -> String {
     format!("{value}ms")
+}
+
+fn format_duration_f64(value: f64) -> String {
+    format!("{value:.0}ms")
 }
 
 fn format_optional_duration(value: Option<u64>) -> String {
@@ -764,6 +1148,34 @@ impl BenchmarkObserver {
     fn elapsed_ms(&self) -> Option<u64> {
         self.started_at
             .map(|started_at| started_at.elapsed().as_millis() as u64)
+    }
+}
+
+impl BenchmarkPrewarmMode {
+    fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" | "cold" => Ok(Self::Off),
+            "on" | "warm" | "prewarmed" => Ok(Self::On),
+            other => bail!("unsupported --prewarm mode: {other}"),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+        }
+    }
+}
+
+fn benchmark_notes(prewarm: BenchmarkPrewarmMode) -> Vec<String> {
+    match prewarm {
+        BenchmarkPrewarmMode::Off => vec![
+            "Persistent OCR workers are shut down before each fixture to capture cold-start TTFT.".into(),
+        ],
+        BenchmarkPrewarmMode::On => vec![
+            "The persistent OCR worker is prewarmed before each fixture to capture post-idle warm-start TTFT.".into(),
+        ],
     }
 }
 
@@ -870,7 +1282,7 @@ fn whitespace_regex() -> &'static Regex {
 fn isolated_page_header_regex() -> &'static Regex {
     static REGEX: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     REGEX.get_or_init(|| {
-        Regex::new(r"(?im)(?:^|\n\s*\n)\s*page\s+\d+(?:\s*(?:/|of)\s*\d+)?\s*:?\s*(?=\n\s*\n|$)")
+        Regex::new(r"(?im)(?:^|\n\s*\n)\s*page\s+\d+(?:\s*(?:/|of)\s*\d+)?\s*:?\s*(?:\n\s*\n|$)")
             .expect("isolated page header regex")
     })
 }

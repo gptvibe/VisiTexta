@@ -1,10 +1,8 @@
-use crate::defaults::DEFAULT_PROMPT_TEXT;
 use crate::errors::{PipelineError, Result};
 use crate::events::{
     AppEvent, CompletedEvent, ErrorEvent, JobStatus, PreviewEvent, PreviewKind, ProgressEvent,
     RunnerEvent, RunnerMode, RunnerStage,
 };
-use crate::formatting::clean_markdown;
 use crate::history;
 use crate::llm::{LlmOcrEngine, OcrStreamEvent};
 use crate::pdf::{render_pdf_pages_lazy, RenderedPdfPage};
@@ -28,6 +26,8 @@ pub struct JobResult {
     pub job_id: String,
     pub source: String,
     pub output_path: Option<String>,
+    #[serde(default = "crate::modes::default_workflow_mode")]
+    pub workflow_mode: crate::modes::WorkflowMode,
     pub status: JobStatus,
     pub error: Option<String>,
     pub progress: Option<f32>,
@@ -45,6 +45,9 @@ static ACTIVE_JOBS: Lazy<Mutex<HashMap<String, bool>>> = Lazy::new(|| Mutex::new
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Default)]
 pub struct PipelineRunOptions {
+    pub workflow_mode: Option<crate::modes::WorkflowMode>,
+    pub study_boost: Option<bool>,
+    pub extract_template_id: Option<String>,
     pub runtime_profile: Option<crate::runtime::RuntimeProfile>,
     pub max_ocr_dimension: Option<u32>,
     pub lazy_preview_thumbnails: Option<bool>,
@@ -65,9 +68,12 @@ impl EffectivePreviewPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct EffectivePipelineSettings {
     threads: u16,
+    study_boost: bool,
+    workflow_mode: crate::modes::WorkflowMode,
+    extract_template_id: String,
     runtime_profile: crate::runtime::RuntimeProfile,
     max_ocr_dimension: u32,
     preview_policy: EffectivePreviewPolicy,
@@ -208,6 +214,7 @@ pub(crate) fn process_batch_with_observer(
     let mut results = Vec::with_capacity(paths.len());
     let effective_settings = effective_pipeline_settings(settings, run_options.as_ref());
     let mut runtime_settings = settings.clone();
+    runtime_settings.workflow_mode = effective_settings.workflow_mode;
     runtime_settings.runtime_profile = effective_settings.runtime_profile;
     let model_path = crate::models::resolve_active_vision_model_path(&runtime_settings)?;
     let ocr = LlmOcrEngine::new(
@@ -215,11 +222,13 @@ pub(crate) fn process_batch_with_observer(
         effective_settings.threads,
         effective_settings.runtime_profile,
     )?;
-    let effective_prompt = prompt
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(DEFAULT_PROMPT_TEXT);
+    let resolved_prompt =
+        crate::modes::resolve_prompt(effective_settings.workflow_mode, prompt.as_deref());
+    let ocr_prompt = if effective_settings.workflow_mode == crate::modes::WorkflowMode::ExactOcr {
+        resolved_prompt.prompt.as_str()
+    } else {
+        crate::defaults::DEFAULT_PROMPT_TEXT
+    };
 
     for raw in paths {
         let path = PathBuf::from(&raw);
@@ -229,6 +238,7 @@ pub(crate) fn process_batch_with_observer(
             job_id: job_id.clone(),
             source: raw.clone(),
             output_path: None,
+            workflow_mode: effective_settings.workflow_mode,
             status: JobStatus::Queued,
             error: None,
             progress: Some(0.0),
@@ -252,11 +262,23 @@ pub(crate) fn process_batch_with_observer(
         }
 
         let res = if is_cancel_requested(&job_id) {
-            canceled(job_id, raw, observer)
+            canceled(job_id, raw, effective_settings.workflow_mode, observer)
         } else if !path.exists() {
-            fail(job_id, raw, "file does not exist".into(), observer)
+            fail(
+                job_id,
+                raw,
+                effective_settings.workflow_mode,
+                "file does not exist".into(),
+                observer,
+            )
         } else if !is_allowed(&path) {
-            fail(job_id, raw, "unsupported file type".into(), observer)
+            fail(
+                job_id,
+                raw,
+                effective_settings.workflow_mode,
+                "unsupported file type".into(),
+                observer,
+            )
         } else {
             match process_single(
                 observer,
@@ -264,8 +286,9 @@ pub(crate) fn process_batch_with_observer(
                 &path,
                 &ocr,
                 dpi,
-                effective_prompt,
-                effective_settings,
+                &resolved_prompt,
+                ocr_prompt,
+                &effective_settings,
             ) {
                 Ok(out) => {
                     emit_complete(observer, &job_id, &out);
@@ -273,14 +296,23 @@ pub(crate) fn process_batch_with_observer(
                         job_id,
                         source: raw,
                         output_path: Some(out.to_string_lossy().into_owned()),
+                        workflow_mode: effective_settings.workflow_mode,
                         status: JobStatus::Done,
                         error: None,
                         progress: Some(1.0),
                         message: Some("Markdown ready".into()),
                     }
                 }
-                Err(PipelineError::Canceled) => canceled(job_id, raw, observer),
-                Err(err) => fail(job_id, raw, err.to_string(), observer),
+                Err(PipelineError::Canceled) => {
+                    canceled(job_id, raw, effective_settings.workflow_mode, observer)
+                }
+                Err(err) => fail(
+                    job_id,
+                    raw,
+                    effective_settings.workflow_mode,
+                    err.to_string(),
+                    observer,
+                ),
             }
         };
 
@@ -293,7 +325,12 @@ pub(crate) fn process_batch_with_observer(
     Ok(results)
 }
 
-fn canceled(job_id: String, source: String, observer: &mut dyn PipelineObserver) -> JobResult {
+fn canceled(
+    job_id: String,
+    source: String,
+    workflow_mode: crate::modes::WorkflowMode,
+    observer: &mut dyn PipelineObserver,
+) -> JobResult {
     emit_progress(
         observer,
         &job_id,
@@ -311,6 +348,7 @@ fn canceled(job_id: String, source: String, observer: &mut dyn PipelineObserver)
         job_id,
         source,
         output_path: None,
+        workflow_mode,
         status: JobStatus::Canceled,
         error: None,
         progress: Some(1.0),
@@ -360,6 +398,7 @@ impl PipelineObserver for TauriObserver<'_> {
 fn fail(
     job_id: String,
     source: String,
+    workflow_mode: crate::modes::WorkflowMode,
     msg: String,
     observer: &mut dyn PipelineObserver,
 ) -> JobResult {
@@ -368,6 +407,7 @@ fn fail(
         job_id,
         source,
         output_path: None,
+        workflow_mode,
         status: JobStatus::Failed,
         error: Some(msg),
         progress: Some(1.0),
@@ -381,15 +421,16 @@ fn process_single(
     path: &Path,
     ocr: &LlmOcrEngine,
     dpi: u16,
-    prompt: &str,
-    settings: EffectivePipelineSettings,
+    resolved_prompt: &crate::modes::ResolvedWorkflowPrompt,
+    ocr_prompt: &str,
+    settings: &EffectivePipelineSettings,
 ) -> Result<PathBuf> {
     ensure_not_canceled(observer, job_id, path, 0.0, None, None, None, None)?;
 
     let page_texts = if is_pdf(path) {
-        process_pdf_pages(observer, job_id, path, ocr, dpi, prompt, settings)?
+        process_pdf_pages(observer, job_id, path, ocr, dpi, ocr_prompt, settings)?
     } else {
-        process_image_pages(observer, job_id, path, ocr, prompt, settings)?
+        process_image_pages(observer, job_id, path, ocr, ocr_prompt, settings)?
     };
 
     ensure_not_canceled(
@@ -416,7 +457,17 @@ fn process_single(
         Some(page_texts.len()),
     );
 
-    let body = clean_markdown(&page_texts.join("\n"));
+    let body = crate::modes::post_process(
+        settings.workflow_mode,
+        &page_texts,
+        crate::modes::PostProcessOptions {
+            study_boost: settings.study_boost,
+            custom_override: resolved_prompt
+                .used_custom_override
+                .then_some(resolved_prompt.prompt.as_str()),
+            extract_template_id: Some(settings.extract_template_id.as_str()),
+        },
+    );
     if !has_substantive_ocr_text(&body) {
         return Err(PipelineError::Llm(
             "OCR produced empty markdown. Verify the selected model supports vision OCR and try again."
@@ -424,8 +475,15 @@ fn process_single(
         ));
     }
 
-    let markdown = if prompt != DEFAULT_PROMPT_TEXT {
-        format!("<!-- prompt: {} -->\n\n{}", prompt, body)
+    let markdown = if resolved_prompt.used_custom_override {
+        if settings.workflow_mode == crate::modes::WorkflowMode::ExactOcr {
+            format!("<!-- prompt: {} -->\n\n{}", resolved_prompt.prompt, body)
+        } else {
+            format!(
+                "<!-- custom override: {} -->\n\n{}",
+                resolved_prompt.prompt, body
+            )
+        }
     } else {
         body
     };
@@ -479,7 +537,7 @@ fn process_pdf_pages(
     ocr: &LlmOcrEngine,
     dpi: u16,
     prompt: &str,
-    settings: EffectivePipelineSettings,
+    settings: &EffectivePipelineSettings,
 ) -> Result<Vec<String>> {
     emit_progress(
         observer,
@@ -921,7 +979,7 @@ fn process_image_pages(
     path: &Path,
     ocr: &LlmOcrEngine,
     prompt: &str,
-    settings: EffectivePipelineSettings,
+    settings: &EffectivePipelineSettings,
 ) -> Result<Vec<String>> {
     let tempdir = storage::create_temp_work_dir("image-preprocess-")?;
     let out = preprocess_image_to_png(path, tempdir.path(), "image", settings.max_ocr_dimension)?;
@@ -1242,6 +1300,15 @@ fn effective_pipeline_settings(
 
     EffectivePipelineSettings {
         threads: settings.threads,
+        study_boost: run_options
+            .and_then(|options| options.study_boost)
+            .unwrap_or(settings.study_boost),
+        workflow_mode: run_options
+            .and_then(|options| options.workflow_mode)
+            .unwrap_or(settings.workflow_mode),
+        extract_template_id: run_options
+            .and_then(|options| options.extract_template_id.clone())
+            .unwrap_or_else(|| settings.extract_template_id.clone()),
         runtime_profile: run_options
             .and_then(|options| options.runtime_profile)
             .unwrap_or(settings.runtime_profile),

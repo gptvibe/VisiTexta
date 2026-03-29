@@ -12,6 +12,7 @@ export type JobResult = {
   job_id: string
   source: string
   output_path?: string | null
+  workflow_mode: WorkflowMode
   status: JobStatus
   error?: string | null
   progress?: number
@@ -114,6 +115,10 @@ export type Settings = {
   dpi: number
   chunk_size: number
   auto_open: boolean
+  idle_model_prewarm: boolean
+  study_boost: boolean
+  workflow_mode: WorkflowMode
+  extract_template_id: string
   runtime_profile: RuntimeProfile
   max_ocr_dimension: number
   lazy_preview_thumbnails: boolean
@@ -131,6 +136,7 @@ export type RunnerCompatibility = {
 }
 
 export type RuntimeProfile = 'auto' | 'cpu_compatible' | 'accelerated_if_available'
+export type WorkflowMode = 'exact_ocr' | 'notes' | 'extract'
 
 export type RuntimeStatus = {
   selected_profile: RuntimeProfile
@@ -172,6 +178,40 @@ export type PromptDefaults = {
   hint: string
 }
 
+export type WorkflowModeExport = {
+  id: 'markdown' | 'text' | 'json' | 'pdf' | 'csv'
+  label: string
+  extension: string
+  description: string
+  primary: boolean
+}
+
+export type WorkflowModeDefinition = {
+  id: WorkflowMode
+  label: string
+  short_label: string
+  description: string
+  helper: string
+  result_label: string
+  empty_state_copy: string
+  copy_action_label: string
+  save_action_label: string
+  advanced_panel_copy: string
+  prompt_label: string
+  prompt_hint: string
+  prompt_placeholder: string
+  default_prompt: string
+  available_exports: WorkflowModeExport[]
+}
+
+export type ExtractTemplateDefinition = {
+  id: string
+  label: string
+  description: string
+  helper: string
+  csv_hint: string
+}
+
 export type ExtractionPreset = {
   id: string
   label: string
@@ -187,6 +227,9 @@ export type ExtractionPreset = {
 }
 
 export type RunOptions = {
+  workflow_mode?: WorkflowMode | null
+  study_boost?: boolean | null
+  extract_template_id?: string | null
   runtime_profile?: RuntimeProfile | null
   max_ocr_dimension?: number | null
   lazy_preview_thumbnails?: boolean | null
@@ -199,6 +242,8 @@ export type AppDefaults = {
   theme: ThemeDefaults
   runtime_profiles: RuntimeProfileDefaults
   prompt: PromptDefaults
+  workflow_modes: WorkflowModeDefinition[]
+  extract_templates: ExtractTemplateDefinition[]
   extraction_presets: ExtractionPreset[]
   recommended_model_profile_id: string
   recommended_model_label: string

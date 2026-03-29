@@ -3,15 +3,19 @@ pub mod benchmark;
 mod defaults;
 mod errors;
 mod events;
+mod extract;
 mod formatting;
 mod history;
 mod llm;
 mod models;
+mod modes;
 mod pdf;
+mod pdf_export;
 mod pipeline;
 mod runtime;
 mod settings;
 mod storage;
+mod study;
 
 use base64::Engine;
 use pipeline::JobResult;
@@ -79,7 +83,9 @@ pub fn run() {
             list_models,
             download_model,
             read_markdown_file,
-            save_markdown_as
+            save_markdown_as,
+            save_text_as,
+            save_pdf_as
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -230,6 +236,18 @@ fn save_markdown_as(src_path: String, dest_path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn save_text_as(content: String, dest_path: String) -> Result<(), String> {
+    storage::atomic_write(std::path::Path::new(&dest_path), content.as_bytes())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_pdf_as(title: String, content: String, dest_path: String) -> Result<(), String> {
+    pdf_export::save_printable_pdf(&title, &content, std::path::Path::new(&dest_path))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_settings() -> Settings {
     Settings::load()
 }
@@ -276,9 +294,22 @@ fn get_job_history() -> Result<Vec<JobResult>, String> {
 
 #[tauri::command]
 fn set_settings(settings: Settings) -> Result<(), String> {
+    let previous = Settings::load();
     settings.save().map_err(|e| e.to_string())?;
     llm::shutdown_persistent_worker();
+    if should_schedule_idle_prewarm(&previous, &settings) {
+        llm::schedule_idle_prewarm(settings.clone());
+    }
     Ok(())
+}
+
+fn should_schedule_idle_prewarm(previous: &Settings, next: &Settings) -> bool {
+    next.idle_model_prewarm
+        && (previous.model_file != next.model_file
+            || previous.model_profile_id != next.model_profile_id
+            || previous.runtime_profile != next.runtime_profile
+            || previous.threads != next.threads
+            || previous.idle_model_prewarm != next.idle_model_prewarm)
 }
 
 fn write_pasted_image(image_base64: &str, mime_type: &str) -> Result<String, String> {

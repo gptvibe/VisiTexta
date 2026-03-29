@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "run_id": "e6136fb2dc5c42308530be243b13e138",
+  "generated_at_utc": "2026-03-29T03:23:14.990810900+00:00",
+  "benchmark_root": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks",
+  "fixture_manifest": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\fixtures\\manifest.json",
+  "output_root": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\out",
+  "suite_name": "VisiTexta OCR Regression Suite",
+  "suite_description": "Starter fixtures for benchmarking preview latency, OCR latency, total runtime, memory, and normalized output stability.",
+  "notes": [
+    "Warm-start envelope baseline captured on the release workstation. Case timings use the slowest approved warm run observed for each fixture, and PDF peak memory uses the highest approved observed peak."
+  ],
+  "normalization_rules": [
+    "Collapse all whitespace runs to a single space.",
+    "Strip injected page headers like `## Page N` or `Page N of M`.",
+    "Ignore blank-line-only formatting changes when diffing token sequences."
+  ],
+  "settings": {
+    "working_directory": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app",
+    "model_file": null,
+    "idle_model_prewarm": true,
+    "benchmark_prewarm_mode": "on",
+    "threads": 7,
+    "default_dpi": 300,
+    "default_prompt": "Extract all text from the image and return it as markdown.",
+    "debug_assertions": true
+  },
+  "summary": {
+    "fixture_count": 4,
+    "success_count": 4,
+    "failure_count": 0,
+    "missing_expected_count": 0,
+    "average_time_to_first_preview_ms": 3546.75,
+    "average_time_to_first_text_ms": 80129.75,
+    "average_total_time_ms": 121526.75,
+    "max_peak_memory_bytes": 13582974976,
+    "max_normalized_output_diff": 0.0
+  },
+  "cases": [
+    {
+      "id": "image-note",
+      "name": "Image Note",
+      "description": "Single PNG with short mixed text, numerals, and punctuation.",
+      "kind": "image",
+      "source_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\fixtures\\inputs/sample-note.png",
+      "staged_input_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\out\\20260329T032314Z-e6136fb2\\image-note\\sample-note.png",
+      "expected_output_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\fixtures\\expected/sample-note.md",
+      "actual_output_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\out\\20260329T032314Z-e6136fb2\\image-note\\sample-note.ocr.md",
+      "prompt": null,
+      "dpi": 300,
+      "run_options": null,
+      "tags": [
+        "image",
+        "starter"
+      ],
+      "status": "ok",
+      "error": null,
+      "blessed_output": false,
+      "comparison_basis": "fixture_expected",
+      "metrics": {
+        "time_to_first_preview_ms": 2200,
+        "time_to_first_text_ms": 65797,
+        "total_time_ms": 66586,
+        "peak_memory_bytes": 7365935104,
+        "normalized_output_diff": 0.0,
+        "actual_token_count": 8,
+        "expected_token_count": 8
+      }
+    },
+    {
+      "id": "image-note-low-end",
+      "name": "Image Note (Starter preset)",
+      "description": "Single PNG routed through the low-end Starter preset to watch CPU-safe TTFT and memory behavior.",
+      "kind": "image",
+      "source_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\fixtures\\inputs/sample-note.png",
+      "staged_input_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\out\\20260329T032314Z-e6136fb2\\image-note-low-end\\sample-note.png",
+      "expected_output_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\fixtures\\expected/sample-note.md",
+      "actual_output_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\out\\20260329T032314Z-e6136fb2\\image-note-low-end\\sample-note.ocr.md",
+      "prompt": null,
+      "dpi": 200,
+      "run_options": {
+        "workflow_mode": null,
+        "study_boost": null,
+        "extract_template_id": null,
+        "runtime_profile": "cpu_compatible",
+        "max_ocr_dimension": 1200,
+        "lazy_preview_thumbnails": true,
+        "disable_rich_preview_for_large_jobs": true,
+        "large_job_page_threshold": 12
+      },
+      "tags": [
+        "image",
+        "starter",
+        "low-end"
+      ],
+      "status": "ok",
+      "error": null,
+      "blessed_output": false,
+      "comparison_basis": "fixture_expected",
+      "metrics": {
+        "time_to_first_preview_ms": 2751,
+        "time_to_first_text_ms": 51711,
+        "total_time_ms": 52506,
+        "peak_memory_bytes": 5978963968,
+        "normalized_output_diff": 0.0,
+        "actual_token_count": 8,
+        "expected_token_count": 8
+      }
+    },
+    {
+      "id": "pdf-two-page",
+      "name": "Two Page PDF",
+      "description": "Two-page PDF to exercise PDF rendering, page previews, and page-header normalization.",
+      "kind": "pdf",
+      "source_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\fixtures\\inputs/sample-brief.pdf",
+      "staged_input_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\out\\20260329T032314Z-e6136fb2\\pdf-two-page\\sample-brief.pdf",
+      "expected_output_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\fixtures\\expected/sample-brief.md",
+      "actual_output_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\out\\20260329T032314Z-e6136fb2\\pdf-two-page\\sample-brief.ocr.md",
+      "prompt": null,
+      "dpi": 300,
+      "run_options": null,
+      "tags": [
+        "pdf",
+        "starter",
+        "multi-page"
+      ],
+      "status": "ok",
+      "error": null,
+      "blessed_output": false,
+      "comparison_basis": "fixture_expected",
+      "metrics": {
+        "time_to_first_preview_ms": 6353,
+        "time_to_first_text_ms": 136905,
+        "total_time_ms": 237317,
+        "peak_memory_bytes": 13582974976,
+        "normalized_output_diff": 0.0,
+        "actual_token_count": 23,
+        "expected_token_count": 23
+      }
+    },
+    {
+      "id": "pdf-two-page-starter-scan",
+      "name": "Two Page Scan (Starter preset)",
+      "description": "Two-page scan run with the low-end preset so release QA catches regressions on thinner laptops and multi-page jobs.",
+      "kind": "pdf",
+      "source_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\fixtures\\inputs/sample-brief.pdf",
+      "staged_input_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\out\\20260329T032314Z-e6136fb2\\pdf-two-page-starter-scan\\sample-brief.pdf",
+      "expected_output_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\fixtures\\expected/sample-brief.md",
+      "actual_output_file": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\out\\20260329T032314Z-e6136fb2\\pdf-two-page-starter-scan\\sample-brief.ocr.md",
+      "prompt": null,
+      "dpi": 200,
+      "run_options": {
+        "workflow_mode": null,
+        "study_boost": null,
+        "extract_template_id": null,
+        "runtime_profile": "cpu_compatible",
+        "max_ocr_dimension": 1200,
+        "lazy_preview_thumbnails": true,
+        "disable_rich_preview_for_large_jobs": true,
+        "large_job_page_threshold": 12
+      },
+      "tags": [
+        "pdf",
+        "scan",
+        "multi-page",
+        "low-end"
+      ],
+      "status": "ok",
+      "error": null,
+      "blessed_output": false,
+      "comparison_basis": "fixture_expected",
+      "metrics": {
+        "time_to_first_preview_ms": 2883,
+        "time_to_first_text_ms": 66106,
+        "total_time_ms": 129698,
+        "peak_memory_bytes": 12519899136,
+        "normalized_output_diff": 0.0,
+        "actual_token_count": 23,
+        "expected_token_count": 23
+      }
+    }
+  ]
+}

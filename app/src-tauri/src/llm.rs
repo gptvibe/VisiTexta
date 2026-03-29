@@ -15,6 +15,7 @@ use std::net::TcpListener;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -30,11 +31,13 @@ const SERVER_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 const SERVER_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const SERVER_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 const OCR_SERVER_HOST: &str = "127.0.0.1";
+const IDLE_PREWARM_DELAY: Duration = Duration::from_secs(3);
 
 static ANSI_ESCAPE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\x1B\[[0-9;]*[A-Za-z]").expect("ansi regex"));
 static PERSISTENT_WORKERS: Lazy<Mutex<PersistentWorkerManager>> =
     Lazy::new(|| Mutex::new(PersistentWorkerManager::default()));
+static IDLE_PREWARM_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
 const FILTERED_STDOUT_PREFIXES: &[&str] = &[
     "build ",
@@ -237,6 +240,29 @@ impl LlmOcrEngine {
         }))
     }
 
+    pub fn prewarm<F>(&self, mut on_event: F) -> Result<bool>
+    where
+        F: FnMut(OcrStreamEvent),
+    {
+        for runtime in &self.runtime_plan.server_runtimes {
+            let config = WorkerConfig {
+                runner_path: runtime.path.clone(),
+                model_path: self.model_path.clone(),
+                mmproj_path: self.mmproj_path.clone(),
+                threads: self.threads.max(1),
+            };
+
+            let mut manager = PERSISTENT_WORKERS.lock();
+            if !manager.can_attempt(&config) {
+                continue;
+            }
+
+            return manager.prewarm(config, &runtime.label, &mut on_event);
+        }
+
+        Ok(false)
+    }
+
     fn try_recognize_with_runner<F>(
         &self,
         runtime: &RuntimeExecutable,
@@ -417,27 +443,11 @@ impl PersistentWorkerManager {
     where
         F: FnMut(OcrStreamEvent),
     {
-        if !self.can_attempt(&config) {
-            return Err(PipelineError::Llm(
-                "persistent OCR worker is disabled for the active model".into(),
-            ));
-        }
-
-        let started_now = self.ensure_worker(&config, runtime_label, on_event)?;
+        self.ensure_ready(config.clone(), runtime_label, on_event)?;
         let worker = self
             .current
             .as_mut()
             .ok_or_else(|| PipelineError::Llm("persistent OCR worker is unavailable".into()))?;
-
-        let ready_message = if started_now {
-            format!("{runtime_label} runtime is ready.")
-        } else {
-            format!("Reusing warm {runtime_label} runtime.")
-        };
-        on_event(OcrStreamEvent::ModelReady {
-            mode: RunnerMode::Persistent,
-            message: ready_message,
-        });
 
         let result = worker.stream_request(image_path, prompt, on_event);
         if result.is_err() {
@@ -447,6 +457,55 @@ impl PersistentWorkerManager {
             self.disabled_config = None;
         }
         result
+    }
+
+    fn prewarm<F>(
+        &mut self,
+        config: WorkerConfig,
+        runtime_label: &str,
+        on_event: &mut F,
+    ) -> Result<bool>
+    where
+        F: FnMut(OcrStreamEvent),
+    {
+        self.ensure_ready(config, runtime_label, on_event)
+    }
+
+    fn ensure_ready<F>(
+        &mut self,
+        config: WorkerConfig,
+        runtime_label: &str,
+        on_event: &mut F,
+    ) -> Result<bool>
+    where
+        F: FnMut(OcrStreamEvent),
+    {
+        if !self.can_attempt(&config) {
+            return Err(PipelineError::Llm(
+                "persistent OCR worker is disabled for the active model".into(),
+            ));
+        }
+
+        match self.ensure_worker(&config, runtime_label, on_event) {
+            Ok(started_now) => {
+                let ready_message = if started_now {
+                    format!("{runtime_label} runtime is ready.")
+                } else {
+                    format!("Reusing warm {runtime_label} runtime.")
+                };
+                on_event(OcrStreamEvent::ModelReady {
+                    mode: RunnerMode::Persistent,
+                    message: ready_message,
+                });
+                self.disabled_config = None;
+                Ok(started_now)
+            }
+            Err(err) => {
+                self.disabled_config = Some(config);
+                self.shutdown_current_worker();
+                Err(err)
+            }
+        }
     }
 
     fn ensure_worker<F>(
@@ -844,8 +903,37 @@ impl StreamingSanitizer {
 }
 
 pub fn shutdown_persistent_worker() {
+    IDLE_PREWARM_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let mut manager = PERSISTENT_WORKERS.lock();
     manager.reset();
+}
+
+pub fn prewarm_persistent_worker(settings: &crate::settings::Settings) -> Result<bool> {
+    let model_path = crate::models::resolve_active_vision_model_path(settings)
+        .map_err(|err| PipelineError::Llm(err.to_string()))?;
+    let engine = LlmOcrEngine::new(model_path, settings.threads, settings.runtime_profile)?;
+    engine.prewarm(|_| {})
+}
+
+pub fn schedule_idle_prewarm(settings: crate::settings::Settings) {
+    if !settings.idle_model_prewarm {
+        return;
+    }
+
+    let request_id = IDLE_PREWARM_REQUEST_ID.fetch_add(1, Ordering::Relaxed) + 1;
+    thread::spawn(move || {
+        thread::sleep(IDLE_PREWARM_DELAY);
+
+        if IDLE_PREWARM_REQUEST_ID.load(Ordering::Relaxed) != request_id {
+            return;
+        }
+
+        match prewarm_persistent_worker(&settings) {
+            Ok(true) => log::info!("idle OCR prewarm completed"),
+            Ok(false) => log::info!("idle OCR prewarm skipped: no persistent runtime available"),
+            Err(err) => log::warn!("idle OCR prewarm failed: {err}"),
+        }
+    });
 }
 
 fn format_runtime_failure_message(

@@ -1,16 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import type { JobPreviewPage, JobResult, JobStreamState } from '../types'
+import ReactMarkdown, { type Components } from 'react-markdown'
+import type {
+  JobPreviewPage,
+  JobResult,
+  JobStreamState,
+  WorkflowModeDefinition,
+  WorkflowModeExport,
+} from '../types'
+
+type PreviewTab = 'original' | 'ocr' | 'result' | 'export'
 
 type MarkdownPreviewProps = {
   job?: JobResult | null
   renderedMarkdown: string
+  modeDefinition: WorkflowModeDefinition
   stream?: JobStreamState | null
+  activeModelLabel: string
+  runtimeLabel: string
+  storageModeLabel: string
   onRetry?: () => void
   onCancel?: () => void
   onOpenOutputFolder?: () => void
   onRevealInExplorer?: () => void
   onCopyMarkdown?: () => void
+  onExportResult?: (exportId?: WorkflowModeExport['id']) => void
   isCancelRequested?: boolean
 }
 
@@ -20,27 +33,59 @@ function getFileName(path?: string | null) {
   return parts[parts.length - 1] || path
 }
 
+function readSourcePageNumber(href?: string | null) {
+  const match = href?.match(/^#source-page-(\d+)$/i)
+  if (!match) return null
+  return Number.parseInt(match[1], 10)
+}
+
+function isJobStreaming(job?: JobResult | null) {
+  return job ? !['Done', 'Failed', 'Canceled'].includes(job.status) : false
+}
+
+function previewStateLabel(
+  job?: JobResult | null,
+  isCancelRequested?: boolean
+) {
+  if (!job) return 'Ready'
+  if (isCancelRequested) return 'Stopping'
+  if (job.status === 'Done') return 'Ready'
+  if (job.status === 'Failed') return 'Needs attention'
+  if (job.status === 'Canceled') return 'Canceled'
+  if (job.status === 'Rendering') return 'Preparing pages'
+  if (job.status === 'Formatting') return 'Cleaning text'
+  if (job.status === 'Writing') return 'Saving'
+  return 'Reading text'
+}
+
 export function MarkdownPreview({
   job,
   renderedMarkdown,
+  modeDefinition,
   stream,
+  activeModelLabel,
+  runtimeLabel,
+  storageModeLabel,
   onRetry,
   onCancel,
   onOpenOutputFolder,
   onRevealInExplorer,
   onCopyMarkdown,
+  onExportResult,
   isCancelRequested,
 }: MarkdownPreviewProps) {
   const streamText = stream?.streamed_markdown?.trim() || ''
   const markdown = renderedMarkdown || streamText
-  const isStreaming = job ? !['Done', 'Failed', 'Canceled'].includes(job.status) : false
+  const isStreaming = isJobStreaming(job)
   const streamRef = useRef<HTMLPreElement | null>(null)
   const [selectedPageNumber, setSelectedPageNumber] = useState<number | null>(null)
+  const [activeTab, setActiveTab] = useState<PreviewTab>('result')
   const canRetry = Boolean(job && !isStreaming)
   const canCancel = Boolean(job && isStreaming && !isCancelRequested)
   const canOpenFolder = Boolean(job?.output_path)
   const canReveal = Boolean(job?.output_path || job?.source)
   const canCopy = Boolean(markdown.trim())
+  const canExport = Boolean(markdown.trim() || job?.output_path)
   const lazyThumbnailLimit = 8
 
   const pages = useMemo<JobPreviewPage[]>(() => {
@@ -60,6 +105,11 @@ export function MarkdownPreview({
     return []
   }, [stream])
 
+  useEffect(() => {
+    setActiveTab(isStreaming ? 'original' : 'result')
+    setSelectedPageNumber(null)
+  }, [isStreaming, job?.job_id])
+
   const resolvedSelectedPageNumber =
     selectedPageNumber && pages.some((page) => page.page_number === selectedPageNumber)
       ? selectedPageNumber
@@ -73,6 +123,11 @@ export function MarkdownPreview({
       pages[0]
     )
   }, [pages, resolvedSelectedPageNumber, stream?.current_page])
+
+  const availablePageNumbers = useMemo(
+    () => new Set(pages.map((page) => page.page_number)),
+    [pages]
+  )
 
   const richPreviewSuppressed = Boolean(
     stream?.disable_rich_preview_for_large_jobs &&
@@ -122,23 +177,15 @@ export function MarkdownPreview({
     return isStreaming ? 'Working' : 'Ready'
   }, [isStreaming, stream])
 
-  const previewStateLabel = useMemo(() => {
-    if (!job) return 'Ready'
-    if (isCancelRequested) return 'Stopping'
-    if (job.status === 'Done') return 'Ready'
-    if (job.status === 'Failed') return 'Needs attention'
-    if (job.status === 'Canceled') return 'Canceled'
-    if (job.status === 'Rendering') return 'Preparing pages'
-    if (job.status === 'Formatting') return 'Cleaning text'
-    if (job.status === 'Writing') return 'Saving'
-    return 'Reading text'
-  }, [isCancelRequested, job])
+  const stateLabel = previewStateLabel(job, isCancelRequested)
+  const progressPercent = Math.min(100, Math.max(0, Math.round((job?.progress ?? 0) * 100)))
+  const progressMessage =
+    stream?.runner_message || job?.message || (job ? stateLabel : 'Choose a file to begin.')
+  const pageStatus =
+    activePage && stream?.total_pages ? `Page ${activePage.page_number} / ${stream.total_pages}` : null
 
   const feedback = useMemo(() => {
     if (!job) return null
-    if (job.status === 'Done') {
-      return { tone: 'success', message: 'Markdown is ready. You can copy it or open the folder.' }
-    }
     if (job.status === 'Failed') {
       return { tone: 'error', message: job.error || 'This file could not be completed.' }
     }
@@ -148,30 +195,189 @@ export function MarkdownPreview({
     if (isCancelRequested) {
       return { tone: 'warning', message: 'Stopping after the current step finishes.' }
     }
+    if (job.status === 'Done') {
+      return {
+        tone: 'success',
+        message: `${modeDefinition.result_label} is ready.`,
+      }
+    }
     return null
-  }, [isCancelRequested, job])
+  }, [isCancelRequested, job, modeDefinition.result_label])
 
-  return (
-    <div className="preview">
-      <div className="panel-title">Preview</div>
-      {!job && <div className="preview-empty">Choose a job to see pages, live text, and markdown.</div>}
-      {job && (
-        <div className="preview-content">
-          <div className="preview-header">
+  const tabOptions: Array<{ id: PreviewTab; label: string; note?: string }> = [
+    { id: 'original', label: 'Original', note: pageStatus || 'Page preview' },
+    { id: 'ocr', label: 'OCR', note: streamStatus },
+    { id: 'result', label: modeDefinition.result_label, note: stateLabel },
+    { id: 'export', label: 'Export', note: `${modeDefinition.available_exports.length} formats` },
+  ]
+
+  const markdownComponents = useMemo<Components>(
+    () => ({
+      a: ({ href, children, node: _node, ...props }) => {
+        const sourcePageNumber = readSourcePageNumber(href)
+        if (sourcePageNumber) {
+          const canJump = availablePageNumbers.has(sourcePageNumber)
+          if (!canJump) {
+            return (
+              <span
+                className="source-page-link unavailable"
+                title="Source preview is not available in this session."
+              >
+                {children}
+              </span>
+            )
+          }
+
+          return (
+            <a
+              {...props}
+              href={href}
+              className="source-page-link"
+              onClick={(event) => {
+                event.preventDefault()
+                setSelectedPageNumber(sourcePageNumber)
+                setActiveTab('original')
+              }}
+              title={`Jump to source page ${sourcePageNumber}`}
+            >
+              {children}
+            </a>
+          )
+        }
+
+        return (
+          <a {...props} href={href} target="_blank" rel="noreferrer">
+            {children}
+          </a>
+        )
+      },
+    }),
+    [availablePageNumbers]
+  )
+
+  const tabBody = (() => {
+    if (activeTab === 'original') {
+      return (
+        <div className="preview-tab-panel">
+          <div className="preview-panel-header">
             <div>
-              <div className="preview-name">{getFileName(job.source)}</div>
-              <div className="preview-path">{job.output_path || stream?.source || 'Working locally on this PC'}</div>
+              <div className="preview-panel-title">Original</div>
+              <div className="preview-panel-copy">
+                {pageStatus || 'The scanned page preview will appear here.'}
+              </div>
             </div>
-            <div className={`preview-state ${isStreaming ? 'live' : 'done'}`}>
-              {previewStateLabel}
+            {pages.length > 0 && (
+              <div className="preview-page-nav compact">
+                <button
+                  className="btn ghost"
+                  onClick={() => {
+                    if (!activePage) return
+                    setSelectedPageNumber(Math.max(1, activePage.page_number - 1))
+                  }}
+                  disabled={!activePage || activePage.page_number <= 1}
+                >
+                  Previous
+                </button>
+                <button
+                  className="btn ghost"
+                  onClick={() => {
+                    if (!activePage) return
+                    setSelectedPageNumber(Math.min(pages.length, activePage.page_number + 1))
+                  }}
+                  disabled={!activePage || activePage.page_number >= pages.length}
+                >
+                  Next
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="preview-focus-frame">
+            {activePage?.image_data_url ? (
+              <img className="preview-image" src={activePage.image_data_url} alt={job?.source} />
+            ) : richPreviewSuppressed ? (
+              <div className="preview-placeholder">
+                Rich preview is disabled for this large job to keep memory use lower.
+              </div>
+            ) : (
+              <div className="preview-placeholder">
+                The current page will appear here while text is being extracted.
+              </div>
+            )}
+          </div>
+          {visibleThumbnails.length > 1 && (
+            <div className="preview-thumbnail-strip" role="tablist" aria-label="Scanned pages">
+              {visibleThumbnails.map((page) => (
+                <button
+                  key={page.page_number}
+                  className={`preview-thumbnail ${page.page_number === activePage?.page_number ? 'selected' : ''}`}
+                  onClick={() => setSelectedPageNumber(page.page_number)}
+                  role="tab"
+                  aria-selected={page.page_number === activePage?.page_number}
+                >
+                  <img src={page.image_data_url} alt={`${job?.source} page ${page.page_number}`} />
+                  <span>{`P${page.page_number}`}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {stream?.lazy_preview_thumbnails && pages.length > visibleThumbnails.length && (
+            <div className="preview-inline-note">
+              {`Showing ${visibleThumbnails.length} nearby page thumbnails to keep the preview lighter.`}
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    if (activeTab === 'ocr') {
+      return (
+        <div className="preview-tab-panel">
+          <div className="preview-panel-header">
+            <div>
+              <div className="preview-panel-title">Live OCR</div>
+              <div className="preview-panel-copy">
+                {streamStatus}
+                {pageStatus ? ` • ${pageStatus}` : ''}
+              </div>
             </div>
           </div>
-          <div className="preview-actions">
-            <button className="btn ghost" onClick={onRetry} disabled={!canRetry}>
-              Retry
-            </button>
-            <button className="btn ghost" onClick={onCancel} disabled={!canCancel}>
-              {isCancelRequested ? 'Stopping...' : 'Cancel'}
+          <pre ref={streamRef} className="preview-stream focus">
+            {streamText ? <span className="preview-stream-text">{streamText}</span> : 'Waiting for extracted text...'}
+            {isStreaming && <span className="preview-caret" aria-hidden="true" />}
+          </pre>
+        </div>
+      )
+    }
+
+    if (activeTab === 'export') {
+      return (
+        <div className="preview-tab-panel">
+          <div className="preview-panel-header">
+            <div>
+              <div className="preview-panel-title">Export</div>
+              <div className="preview-panel-copy">
+                Save the current {modeDefinition.result_label.toLowerCase()} in the format you need.
+              </div>
+            </div>
+          </div>
+          <div className="preview-export-grid">
+            {modeDefinition.available_exports.map((exportOption) => (
+              <button
+                key={exportOption.id}
+                className={`preview-export-card ${exportOption.primary ? 'primary' : ''}`}
+                onClick={() => onExportResult?.(exportOption.id)}
+                disabled={!canExport}
+                type="button"
+              >
+                <span className="preview-export-label">{exportOption.label}</span>
+                <strong>{`.${exportOption.extension}`}</strong>
+                <span>{exportOption.description}</span>
+              </button>
+            ))}
+          </div>
+          <div className="preview-export-actions">
+            <button className="btn primary" onClick={onCopyMarkdown} disabled={!canCopy}>
+              {modeDefinition.copy_action_label}
             </button>
             <button className="btn ghost" onClick={onOpenOutputFolder} disabled={!canOpenFolder}>
               Open output folder
@@ -179,111 +385,103 @@ export function MarkdownPreview({
             <button className="btn ghost" onClick={onRevealInExplorer} disabled={!canReveal}>
               Reveal in Explorer
             </button>
-            <button className="btn primary" onClick={onCopyMarkdown} disabled={!canCopy}>
-              Copy markdown
-            </button>
           </div>
+        </div>
+      )
+    }
+
+    return (
+      <div className="preview-tab-panel">
+        <div className="preview-panel-header">
+          <div>
+            <div className="preview-panel-title">{modeDefinition.result_label}</div>
+            <div className="preview-panel-copy">
+              Source page links will jump back to Original when preview pages are available.
+            </div>
+          </div>
+        </div>
+        <div className="preview-markdown focus">
+          <ReactMarkdown components={markdownComponents}>
+            {markdown || modeDefinition.empty_state_copy}
+          </ReactMarkdown>
+        </div>
+      </div>
+    )
+  })()
+
+  return (
+    <div className="preview calm-preview">
+      <div className="panel-title">Workspace</div>
+      {!job && (
+        <div className="preview-empty">
+          {`Choose a job to review the original pages, live OCR, ${modeDefinition.result_label.toLowerCase()}, and export options.`}
+        </div>
+      )}
+      {job && (
+        <div className="preview-content calm">
+          <div className="preview-hero">
+            <div className="preview-hero-copy">
+              <div className="preview-name">{getFileName(job.source)}</div>
+              <div className="preview-path">{job.output_path || stream?.source || 'Working locally on this PC'}</div>
+            </div>
+            <div className={`preview-state ${isStreaming ? 'live' : 'done'}`}>{stateLabel}</div>
+          </div>
+
+          <div className="preview-status-bar">
+            <div className="preview-status-item">
+              <span>Model</span>
+              <strong>{activeModelLabel}</strong>
+            </div>
+            <div className="preview-status-item">
+              <span>Runtime</span>
+              <strong>{runtimeLabel}</strong>
+            </div>
+            <div className="preview-status-item">
+              <span>Storage</span>
+              <strong>{storageModeLabel}</strong>
+            </div>
+            <div className="preview-status-item progress">
+              <span>Progress</span>
+              <strong>{`${progressPercent}%`}</strong>
+              <div className="preview-progress-bar">
+                <div className="preview-progress-fill" style={{ width: `${progressPercent}%` }} />
+              </div>
+            </div>
+          </div>
+
+          <div className="preview-live-strip">
+            <div className="preview-live-copy">
+              <span className="preview-live-label">Live status</span>
+              <strong>{progressMessage}</strong>
+            </div>
+            <div className="preview-actions compact">
+              <button className="btn ghost" onClick={onRetry} disabled={!canRetry}>
+                Retry
+              </button>
+              <button className="btn ghost" onClick={onCancel} disabled={!canCancel}>
+                {isCancelRequested ? 'Stopping...' : 'Cancel'}
+              </button>
+            </div>
+          </div>
+
           {feedback && <div className={`preview-feedback ${feedback.tone}`}>{feedback.message}</div>}
-          <div className="preview-grid">
-            <div className="preview-stage">
-              <div className="preview-section-header">
-                <span>Pages</span>
-                {activePage && stream?.total_pages && (
-                  <span>{`Page ${activePage.page_number} / ${stream.total_pages}`}</span>
-                )}
-              </div>
-              {pages.length > 0 && (
-                <div className="preview-page-nav">
-                  <button
-                    className="btn ghost"
-                    onClick={() => {
-                      if (!activePage) return
-                      setSelectedPageNumber(Math.max(1, activePage.page_number - 1))
-                    }}
-                    disabled={!activePage || activePage.page_number <= 1}
-                  >
-                    Previous
-                  </button>
-                  <div className="preview-page-label">
-                    {activePage ? `Showing page ${activePage.page_number}` : 'Waiting for a page'}
-                  </div>
-                  <button
-                    className="btn ghost"
-                    onClick={() => {
-                      if (!activePage) return
-                      setSelectedPageNumber(
-                        Math.min(pages.length, activePage.page_number + 1)
-                      )
-                    }}
-                    disabled={!activePage || activePage.page_number >= pages.length}
-                  >
-                    Next
-                  </button>
-                </div>
-              )}
-              <div className="preview-frame">
-                {activePage?.image_data_url ? (
-                  <img
-                    className="preview-image"
-                    src={activePage.image_data_url}
-                    alt={job.source}
-                  />
-                ) : richPreviewSuppressed ? (
-                  <div className="preview-placeholder">
-                    Rich preview is disabled for this large job to keep memory use lower. Live text and markdown will keep updating while OCR runs.
-                  </div>
-                ) : (
-                  <div className="preview-placeholder">
-                    The current page will appear here while text is being extracted.
-                  </div>
-                )}
-              </div>
-              {visibleThumbnails.length > 1 && (
-                <div className="preview-thumbnails" role="tablist" aria-label="Scanned pages">
-                  {visibleThumbnails.map((page) => (
-                    <button
-                      key={page.page_number}
-                      className={`preview-thumbnail ${page.page_number === activePage?.page_number ? 'selected' : ''}`}
-                      onClick={() => setSelectedPageNumber(page.page_number)}
-                      role="tab"
-                      aria-selected={page.page_number === activePage?.page_number}
-                    >
-                      <img src={page.image_data_url} alt={`${job.source} page ${page.page_number}`} />
-                      <span>{`P${page.page_number}`}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {stream?.lazy_preview_thumbnails && pages.length > visibleThumbnails.length && (
-                <div className="preview-thumbnail-note">
-                  {`Showing ${visibleThumbnails.length} nearby page thumbnails to keep preview work lighter.`}
-                </div>
-              )}
-            </div>
 
-            <div className="preview-stack">
-              <div className="preview-console">
-                <div className="preview-section-header">
-                  <span>Live text</span>
-                  <span>{streamStatus}</span>
-                </div>
-                <pre ref={streamRef} className="preview-stream">
-                  {streamText ? <span className="preview-stream-text">{streamText}</span> : 'Waiting for extracted text...'}
-                  {isStreaming && <span className="preview-caret" aria-hidden="true" />}
-                </pre>
-              </div>
-
-              <div className="preview-rendered">
-                <div className="preview-section-header">
-                  <span>Markdown</span>
-                  <span>{previewStateLabel}</span>
-                </div>
-                <div className="preview-markdown">
-                  <ReactMarkdown>{markdown || 'Markdown will appear here when text is ready.'}</ReactMarkdown>
-                </div>
-              </div>
-            </div>
+          <div className="preview-tabs" role="tablist" aria-label="Preview workspace sections">
+            {tabOptions.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className={`preview-tab ${activeTab === tab.id ? 'active' : ''}`}
+                aria-selected={activeTab === tab.id}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                <span>{tab.label}</span>
+                {tab.note ? <strong>{tab.note}</strong> : null}
+              </button>
+            ))}
           </div>
+
+          <div className="preview-focus-shell">{tabBody}</div>
         </div>
       )}
     </div>

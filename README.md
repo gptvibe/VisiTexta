@@ -12,7 +12,7 @@ This repo currently targets Windows behavior explicitly.
 - Office users who need text from screenshots or PDFs.
 - Anyone who wants simple OCR output in `.md` format.
 
-## What is new in 1.0.0
+## What is new in 2.0.0
 
 - Works reliably for both images and PDFs.
 - Streams OCR text live in the app while processing.
@@ -20,6 +20,9 @@ This repo currently targets Windows behavior explicitly.
 - Uses a local runtime bundle in the release package.
 - Adds an optional runtime profile selector for CPU-compatible or accelerated local inference.
 - Produces cleaner OCR-first Markdown output.
+- Adds calmer preview tabs for Original, OCR, Notes / Extract, and Export, plus a compact status bar for model, runtime, storage mode, and progress.
+- Adds source-linked study notes plus Markdown, plain-text, and searchable text-based PDF note export options.
+- Adds Extract mode with worker/company presets for invoices, receipts, table-to-CSV, meeting photos / whiteboards, and contract key points, including Markdown plus structured JSON and CSV where it fits.
 
 ## Supported files
 
@@ -32,10 +35,19 @@ This repo currently targets Windows behavior explicitly.
 - A Markdown file saved next to your original file as `file.ocr.md`.
 - If that file name already exists, VisiTexta saves `file (ocr 2).md`, `file (ocr 3).md`, and so on instead of overwriting anything.
 - Live preview in the app while OCR runs.
+- Notes mode can include page references that jump back to the preview image while the job stays loaded in the app.
+- Extract mode can produce a readable Markdown summary plus structured JSON, and CSV when the chosen preset exposes row data.
+- Notes PDF export stays text-based so the exported notes remain searchable; page references are preserved as text rather than embedded page-image links.
+
+## Workflow modes
+
+- `Exact OCR` keeps the OCR-focused Markdown output path.
+- `Notes` turns OCR pages into study notes with page references such as `Source: p. 3`, plus Markdown, text, and searchable note PDF export.
+- `Extract` uses business-oriented presets and includes an `Uncertainty / Verification` section for fields that may need manual review.
 
 ## Quick start (for normal users)
 
-1. Download release `1.0.0`.
+1. Download release `2.0.0`.
 2. Choose one package style:
 3. For portable use, unzip the app and run `VisiTexta.exe`.
 4. For installer use, run the Windows installer and launch VisiTexta from the installed app.
@@ -94,7 +106,7 @@ In short: initial delay is expected, then text should start flowing.
 ## Portable package layout
 
 ```text
-VisiTexta 1.0.0/
+VisiTexta 2.0.0/
   VisiTexta.exe
   bin/
     accelerated/
@@ -157,3 +169,5 @@ Release notes for packagers:
 - Installer packages should be installed normally; app data lives under `%LOCALAPPDATA%\VisiTexta`, not in the install directory.
 - `npm run tauri:build:installer` builds the Windows installer bundles.
 - `npm run tauri:build:portable` builds a no-bundle release executable, stages `portable-data\`, and creates a portable zip.
+- `npm run release:qa` runs the release gate: frontend build, `cargo check`, warm benchmark gate, and cold benchmark gate.
+- `npm run benchmark:gate:warm` and `npm run benchmark:gate:cold` compare benchmark runs against the checked-in baselines in `app/benchmarks/baselines/`.

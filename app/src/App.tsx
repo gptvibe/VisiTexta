@@ -13,6 +13,7 @@ import { ToastNotifications, type Toast } from './components/ToastNotifications'
 import type {
   AppDefaults,
   AppEvent,
+  ExtractTemplateDefinition,
   ExtractionPreset,
   JobPreviewPage,
   JobResult,
@@ -28,6 +29,9 @@ import type {
   Settings,
   StorageInfo,
   OnboardingInfo,
+  WorkflowMode,
+  WorkflowModeDefinition,
+  WorkflowModeExport,
 } from './types'
 import './App.css'
 
@@ -43,6 +47,59 @@ type ModelDownloadState = {
 type PresetKey = 'starter' | 'recommended' | 'quality' | 'faster'
 type ThemeChoice = 'light' | 'dark' | 'system'
 type ResolvedTheme = 'light' | 'dark'
+
+type StructuredExtractExport = {
+  template_id: string
+  template_label: string
+  source_page_count: number
+  summary: Array<{ text: string; source_pages: number[] }>
+  fields: Array<{
+    key: string
+    label: string
+    value?: string | null
+    source_pages: number[]
+    needs_verification: boolean
+    verification_note?: string | null
+  }>
+  rows: Array<{
+    cells: Array<{ column: string; value: string }>
+    source_pages: number[]
+    needs_verification: boolean
+    verification_note?: string | null
+  }>
+  verification: Array<{ text: string; source_pages: number[] }>
+  csv_export?: {
+    mode: string
+    columns: string[]
+    rows: string[][]
+  } | null
+}
+
+const fallbackWorkflowMode: WorkflowModeDefinition = {
+  id: 'exact_ocr',
+  label: 'Exact OCR',
+  short_label: 'Exact',
+  description: 'Preserve the current OCR-to-markdown behavior.',
+  helper: 'Use the current OCR-first markdown flow.',
+  result_label: 'Markdown',
+  empty_state_copy: 'Markdown will appear here when text is ready.',
+  copy_action_label: 'Copy markdown',
+  save_action_label: 'Export markdown',
+  advanced_panel_copy: 'Use custom instructions only when you want to override the default OCR behavior.',
+  prompt_label: 'Custom OCR override',
+  prompt_hint: 'Optional. Leave blank to keep the default OCR behavior.',
+  prompt_placeholder: 'Extract all text from the image and return it as markdown.',
+  default_prompt: 'Extract all text from the image and return it as markdown.',
+  available_exports: [
+    {
+      id: 'markdown',
+      label: 'Markdown',
+      extension: 'md',
+      description: 'Faithful OCR markdown output.',
+      primary: true,
+    },
+  ],
+}
 
 const defaultDownloadState: ModelDownloadState = {
   status: 'idle',
@@ -161,6 +218,195 @@ function runtimeProfileLabel(appDefaults: AppDefaults | null, profile: Settings[
   return (
     appDefaults?.runtime_profiles.options.find((option) => option.id === profile)?.label ??
     profile
+  )
+}
+
+function workflowModeDefinition(
+  appDefaults: AppDefaults | null,
+  mode?: WorkflowMode | null
+) {
+  if (!mode) return fallbackWorkflowMode
+  return (
+    appDefaults?.workflow_modes.find((candidate) => candidate.id === mode) || fallbackWorkflowMode
+  )
+}
+
+function normalizeExportExtension(path: string, exportOption: WorkflowModeExport) {
+  if (/\.[^.\\/]+$/.test(path)) {
+    return path
+  }
+  return `${path}.${exportOption.extension}`
+}
+
+function markdownToPlainText(markdown: string) {
+  return markdown
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/\[(.*?)\]\(.*?\)/g, '$1')
+    .replace(/[*_`>#-]/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function deriveExportTitle(
+  markdown: string,
+  job: JobResult | null,
+  modeDefinition: WorkflowModeDefinition
+) {
+  const headingMatch = markdown.match(/^#\s+(.+)$/m)
+  if (headingMatch?.[1]?.trim()) {
+    return headingMatch[1].trim()
+  }
+
+  const sourceName = getFileName(job?.source)
+  const withoutExtension = sourceName.replace(/\.[^.]+$/, '').trim()
+  return withoutExtension || modeDefinition.label
+}
+
+function readMarkdownSection(markdown: string, heading: string) {
+  const pattern = new RegExp(
+    `^##\\s+${escapeRegex(heading)}\\s*$([\\s\\S]*?)(?=^##\\s+|\\Z)`,
+    'im'
+  )
+  const match = markdown.match(pattern)
+  return match?.[1]?.trim() || ''
+}
+
+function stripSourceReferenceSuffix(value: string) {
+  return value
+    .replace(/\s*_\(\s*Source:\s*.+\)_\s*$/i, '')
+    .trim()
+}
+
+function readSectionBullets(markdown: string, heading: string) {
+  return readMarkdownSection(markdown, heading)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- '))
+    .map((line) => line.slice(2).trim())
+    .map(stripSourceReferenceSuffix)
+    .filter(Boolean)
+}
+
+function csvEscape(value: string) {
+  return `"${value.replace(/"/g, '""')}"`
+}
+
+function notesToAnkiCsv(markdown: string, fallbackTitle: string) {
+  const deck = deriveExportTitle(markdown, null, {
+    ...fallbackWorkflowMode,
+    label: fallbackTitle,
+  })
+  const rows: Array<[string, string, string, string]> = []
+  const glossaryItems = readSectionBullets(markdown, 'Glossary')
+  const formulaItems = readSectionBullets(markdown, 'Formulas')
+  const reviewQuestions = readSectionBullets(markdown, 'Review Questions')
+  const keyPoints = readSectionBullets(markdown, 'Key Points')
+  const examples = readSectionBullets(markdown, 'Examples')
+
+  glossaryItems.forEach((item) => {
+    const match = item.match(/^\*\*(.+?)\*\*:\s*(.+)$/)
+    if (match) {
+      rows.push([match[1].trim(), match[2].trim(), deck, 'glossary'])
+    }
+  })
+
+  formulaItems.forEach((item) => {
+    const formula = item.replace(/^`|`$/g, '').trim()
+    if (formula) {
+      rows.push([`When do you use ${formula}?`, formula, deck, 'formula'])
+    }
+  })
+
+  reviewQuestions.forEach((item) => {
+    rows.push([item, '', deck, 'review'])
+  })
+
+  keyPoints.forEach((item) => {
+    rows.push([`Key point from ${deck}`, item, deck, 'key-point'])
+  })
+
+  examples.forEach((item) => {
+    rows.push([`Example from ${deck}`, item, deck, 'example'])
+  })
+
+  if (!rows.length) {
+    rows.push([`Summary of ${deck}`, markdownToPlainText(markdown), deck, 'summary'])
+  }
+
+  return ['Front,Back,Deck,Tags', ...rows.map((row) => row.map(csvEscape).join(','))].join('\n')
+}
+
+function readStructuredExtract(markdown: string): StructuredExtractExport | null {
+  const match = markdown.match(/<!--\s*visitexta-extract:\s*([\s\S]*?)\s*-->/i)
+  if (!match?.[1]) return null
+
+  try {
+    return JSON.parse(match[1]) as StructuredExtractExport
+  } catch {
+    return null
+  }
+}
+
+function structuredExtractToCsv(data: StructuredExtractExport) {
+  const columns = data.csv_export?.columns ?? []
+  const rows = data.csv_export?.rows ?? []
+
+  if (!columns.length) {
+    return ''
+  }
+
+  return [columns, ...rows]
+    .map((row) => row.map((value) => csvEscape(value ?? '')).join(','))
+    .join('\n')
+}
+
+function exportContent(
+  exportOption: WorkflowModeExport,
+  modeDefinition: WorkflowModeDefinition,
+  job: JobResult | null,
+  renderedMarkdown: string
+) {
+  const markdown = renderedMarkdown.trim()
+  const structuredExtract =
+    modeDefinition.id === 'extract' ? readStructuredExtract(markdown) : null
+  if (exportOption.id === 'markdown') {
+    return markdown
+  }
+
+  const plainText = markdownToPlainText(markdown)
+  if (exportOption.id === 'text') {
+    return plainText
+  }
+
+  if (exportOption.id === 'csv') {
+    if (modeDefinition.id === 'extract' && structuredExtract) {
+      return structuredExtractToCsv(structuredExtract)
+    }
+    return notesToAnkiCsv(markdown, modeDefinition.label)
+  }
+
+  if (exportOption.id === 'json' && structuredExtract) {
+    return JSON.stringify(structuredExtract, null, 2)
+  }
+
+  return JSON.stringify(
+    {
+      workflow_mode: modeDefinition.id,
+      workflow_label: modeDefinition.label,
+      source: job?.source ?? null,
+      output_path: job?.output_path ?? null,
+      markdown,
+      plain_text: plainText,
+    },
+    null,
+    2
   )
 }
 
@@ -284,6 +530,16 @@ function describeValidationStatus(downloadState: ModelDownloadState) {
   }
 }
 
+function prioritizeExportOption(
+  exportOptions: WorkflowModeExport[],
+  preferredId?: WorkflowModeExport['id']
+) {
+  if (!preferredId) return exportOptions
+  const preferred = exportOptions.find((exportOption) => exportOption.id === preferredId)
+  if (!preferred) return exportOptions
+  return [preferred, ...exportOptions.filter((exportOption) => exportOption.id !== preferredId)]
+}
+
 function describeDownloadStatus(
   downloadState: ModelDownloadState,
   formatBytesLabel: (value?: number | null) => string | null
@@ -389,7 +645,7 @@ function App() {
   const [streams, setStreams] = useState<Record<string, JobStreamState>>({})
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [markdown, setMarkdown] = useState('')
-  const [log, setLog] = useState('Choose a preset, then drop, paste, or pick a file to begin.')
+  const [log, setLog] = useState('Choose a mode and preset, then drop, paste, or pick a file to begin.')
   const [modelMissing, setModelMissing] = useState(false)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -409,6 +665,11 @@ function App() {
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() => readSystemTheme())
   const effectiveSettings = settings ?? appDefaults?.settings ?? null
   const drawerSettings = effectiveSettings ?? appDefaults?.settings ?? null
+  const selectedWorkflowMode =
+    effectiveSettings?.workflow_mode ?? appDefaults?.settings.workflow_mode ?? 'exact_ocr'
+  const selectedModeDefinition = workflowModeDefinition(appDefaults, selectedWorkflowMode)
+  const workflowModes = appDefaults?.workflow_modes ?? [selectedModeDefinition]
+  const extractTemplates = appDefaults?.extract_templates ?? []
   const presetOptions = appDefaults?.extraction_presets ?? []
   const presetOrder = presetOptions.map((preset) => preset.id as PresetKey)
   const selectedThemeChoice = normalizeThemeChoice(
@@ -420,6 +681,11 @@ function App() {
   const selectedJob = useMemo(
     () => jobs.find((job) => job.job_id === selectedId) || null,
     [jobs, selectedId]
+  )
+
+  const selectedJobModeDefinition = useMemo(
+    () => workflowModeDefinition(appDefaults, selectedJob?.workflow_mode ?? selectedWorkflowMode),
+    [appDefaults, selectedJob?.workflow_mode, selectedWorkflowMode]
   )
 
   const selectedStream = useMemo(
@@ -499,6 +765,16 @@ function App() {
     [presetOptions, selectedPreset]
   )
 
+  const selectedExtractTemplate = useMemo<ExtractTemplateDefinition | null>(() => {
+    if (!extractTemplates.length) return null
+    const templateId = effectiveSettings?.extract_template_id
+    return (
+      extractTemplates.find((template) => template.id === templateId) ||
+      extractTemplates[0] ||
+      null
+    )
+  }, [effectiveSettings?.extract_template_id, extractTemplates])
+
   const effectiveDpi = useMemo(
     () =>
       selectedPresetConfig
@@ -511,6 +787,9 @@ function App() {
     if (!effectiveSettings) return null
 
     return {
+      workflow_mode: effectiveSettings.workflow_mode,
+      study_boost: effectiveSettings.study_boost,
+      extract_template_id: effectiveSettings.extract_template_id,
       runtime_profile:
         selectedPresetConfig?.runtime_profile_override ?? effectiveSettings.runtime_profile,
       max_ocr_dimension:
@@ -532,11 +811,21 @@ function App() {
   const runtimeSetupIssue = Boolean(runtimeStatus && !runtimeStatus.usable_runtime)
 
   const presetSummary = useMemo(() => {
+    const templateSummary =
+      selectedWorkflowMode === 'extract' && selectedExtractTemplate
+        ? ` ${selectedExtractTemplate.label} template is selected.`
+        : ''
     if (!selectedPreset) {
-      return `Using advanced custom DPI (${effectiveSettings?.dpi ?? 300}).`
+      return `Using advanced custom DPI (${effectiveSettings?.dpi ?? 300}).${templateSummary}`
     }
-    return `${selectedPresetConfig?.label || 'Selected'} preset (${selectedPresetConfig?.dpi ?? effectiveSettings?.dpi ?? 300} DPI).`
-  }, [effectiveSettings?.dpi, selectedPreset, selectedPresetConfig])
+    return `${selectedPresetConfig?.label || 'Selected'} preset (${selectedPresetConfig?.dpi ?? effectiveSettings?.dpi ?? 300} DPI).${templateSummary}`
+  }, [
+    effectiveSettings?.dpi,
+    selectedExtractTemplate,
+    selectedPreset,
+    selectedPresetConfig,
+    selectedWorkflowMode,
+  ])
 
   const selectedJobName = getFileName(selectedJob?.source)
   const downloadProgressPercent = Math.min(
@@ -625,6 +914,7 @@ function App() {
     },
     { label: 'In progress', value: activeJobs },
     { label: 'Finished', value: completedJobs },
+    { label: 'Mode', value: selectedModeDefinition.short_label },
     {
       label: 'Preset',
       value: selectedPresetConfig?.label || (selectedPreset ? 'Selected' : 'Advanced custom'),
@@ -834,6 +1124,7 @@ function App() {
           {
             job_id: update.job_id,
             source: update.source ?? 'Unknown',
+            workflow_mode: update.workflow_mode ?? selectedWorkflowMode,
             status: update.status ?? 'Queued',
             output_path: update.output_path ?? null,
             error: update.error ?? null,
@@ -1077,7 +1368,11 @@ function App() {
     }
 
     setBusy(true)
-    setLog(paths.length === 1 ? 'Starting extraction...' : `Starting extraction for ${paths.length} files...`)
+    setLog(
+      paths.length === 1
+        ? `Starting ${selectedModeDefinition.label.toLowerCase()}...`
+        : `Starting ${selectedModeDefinition.label.toLowerCase()} for ${paths.length} files...`
+    )
 
     try {
       const result = (await invoke('enqueue_jobs', {
@@ -1123,7 +1418,7 @@ function App() {
     }
 
     setBusy(true)
-    setLog('Starting extraction from the pasted image...')
+    setLog(`Starting ${selectedModeDefinition.label.toLowerCase()} from the pasted image...`)
 
     try {
       const imageBase64 = await blobToDataUrl(blob)
@@ -1198,7 +1493,7 @@ function App() {
   async function onCopyMarkdown() {
     const text = selectedRenderedMarkdown.trim()
     if (!text && !selectedJob?.output_path) {
-      enqueueToast('Select a job with markdown first.', 'info')
+      enqueueToast(`Select a job with ${selectedJobModeDefinition.result_label.toLowerCase()} first.`, 'info')
       return
     }
 
@@ -1208,13 +1503,13 @@ function App() {
       } else if (selectedJob?.output_path) {
         await invoke('copy_file_to_clipboard', { path: selectedJob.output_path })
       }
-      enqueueToast('Markdown copied.', 'success')
+      enqueueToast(`${selectedJobModeDefinition.result_label} copied.`, 'success')
     } catch (err) {
       console.error(err)
       if (selectedJob?.output_path) {
         try {
           await invoke('copy_file_to_clipboard', { path: selectedJob.output_path })
-          enqueueToast('Markdown copied.', 'success')
+          enqueueToast(`${selectedJobModeDefinition.result_label} copied.`, 'success')
           return
         } catch (fallbackError) {
           console.error(fallbackError)
@@ -1224,22 +1519,61 @@ function App() {
     }
   }
 
-  async function onSaveMarkdown() {
-    if (!selectedJob?.output_path) {
+  async function onSaveMarkdown(preferredExportId?: WorkflowModeExport['id']) {
+    const text = selectedRenderedMarkdown.trim()
+    const exportOptions = selectedJobModeDefinition.available_exports
+    const prioritizedExports = prioritizeExportOption(exportOptions, preferredExportId)
+    const primaryExport =
+      prioritizedExports.find((exportOption) => exportOption.primary) || prioritizedExports[0]
+
+    if (!selectedJob?.output_path && !text) {
       enqueueToast('Select a completed job first.', 'info')
       return
     }
+
     const dest = await save({
-      defaultPath: selectedJob.output_path,
-      filters: [{ name: 'Markdown', extensions: ['md'] }],
+      defaultPath: normalizeExportExtension(
+        selectedJob?.output_path || getFileName(selectedJob?.source),
+        primaryExport
+      ),
+      filters: prioritizedExports.map((exportOption) => ({
+        name: exportOption.label,
+        extensions: [exportOption.extension],
+      })),
     })
     if (!dest) return
     try {
-      await invoke('save_markdown_as', {
-        srcPath: selectedJob.output_path,
-        destPath: dest,
-      })
-      enqueueToast('Markdown saved.', 'success')
+      const rendered =
+        text ||
+        (selectedJob?.output_path
+          ? await invoke<string>('read_markdown_file', { path: selectedJob.output_path }).catch(
+              () => ''
+            )
+          : '')
+      const selectedExport =
+        exportOptions.find((exportOption) =>
+          dest.toLowerCase().endsWith(`.${exportOption.extension}`)
+        ) ||
+        primaryExport
+      const normalizedPath = normalizeExportExtension(dest, selectedExport)
+      if (selectedExport.id === 'pdf') {
+        await invoke('save_pdf_as', {
+          title: deriveExportTitle(rendered, selectedJob, selectedJobModeDefinition),
+          content: rendered,
+          destPath: normalizedPath,
+        })
+      } else {
+        await invoke('save_text_as', {
+          content: exportContent(
+            selectedExport,
+            selectedJobModeDefinition,
+            selectedJob,
+            rendered
+          ),
+          destPath: normalizedPath,
+        })
+      }
+      enqueueToast(`${selectedExport.label} saved.`, 'success')
     } catch (err) {
       console.error(err)
       enqueueToast('Save failed.', 'error')
@@ -1342,6 +1676,73 @@ function App() {
     }
   }
 
+  async function handleWorkflowModeChange(nextMode: WorkflowMode) {
+    if (!effectiveSettings || nextMode === effectiveSettings.workflow_mode) return
+
+    const previous = effectiveSettings
+    const next = {
+      ...effectiveSettings,
+      workflow_mode: nextMode,
+    }
+
+    setSettings(next)
+    setLog(`${workflowModeDefinition(appDefaults, nextMode).label} mode selected.`)
+    try {
+      await persistSettings(next)
+    } catch (err) {
+      console.error(err)
+      setSettings(previous)
+      enqueueToast('Failed to switch mode.', 'error')
+    }
+  }
+
+  async function handleStudyBoostChange(nextStudyBoost: boolean) {
+    if (!effectiveSettings || nextStudyBoost === effectiveSettings.study_boost) return
+
+    const previous = effectiveSettings
+    const next = {
+      ...effectiveSettings,
+      study_boost: nextStudyBoost,
+    }
+
+    setSettings(next)
+    setLog(
+      nextStudyBoost
+        ? 'Study boost enabled for Notes mode.'
+        : 'Study boost disabled for Notes mode.'
+    )
+    try {
+      await persistSettings(next)
+    } catch (err) {
+      console.error(err)
+      setSettings(previous)
+      enqueueToast('Failed to update Study boost.', 'error')
+    }
+  }
+
+  async function handleExtractTemplateChange(nextTemplateId: string) {
+    if (!effectiveSettings || nextTemplateId === effectiveSettings.extract_template_id) return
+
+    const previous = effectiveSettings
+    const next = {
+      ...effectiveSettings,
+      extract_template_id: nextTemplateId,
+    }
+
+    setSettings(next)
+    const templateLabel =
+      extractTemplates.find((template) => template.id === nextTemplateId)?.label ||
+      'Extract template'
+    setLog(`${templateLabel} template selected.`)
+    try {
+      await persistSettings(next)
+    } catch (err) {
+      console.error(err)
+      setSettings(previous)
+      enqueueToast('Failed to switch extract template.', 'error')
+    }
+  }
+
   async function handleThemeToggle() {
     const nextTheme = resolvedTheme === 'dark' ? 'light' : 'dark'
     await handleThemeChange(nextTheme)
@@ -1440,6 +1841,10 @@ function App() {
       }
       importPanel={
         <ImportPanel
+          modeDefinition={selectedModeDefinition}
+          modeOptions={workflowModes}
+          selectedMode={selectedWorkflowMode}
+          onSelectMode={handleWorkflowModeChange}
           showSetupCard={modelMissing || downloadState.status === 'error'}
           runtimeSetupIssue={runtimeSetupIssue}
           setupCardTitle={setupCardTitle}
@@ -1457,6 +1862,9 @@ function App() {
             setSelectedPreset(preset)
             setLog(`${label} preset selected.`)
           }}
+          extractTemplates={extractTemplates}
+          selectedExtractTemplateId={selectedExtractTemplate?.id ?? null}
+          onSelectExtractTemplate={handleExtractTemplateChange}
           busy={busy}
           modelMissing={modelMissing}
           onBrowseFiles={onBrowseFiles}
@@ -1467,26 +1875,33 @@ function App() {
           appDefaults={appDefaults}
           prompt={prompt}
           onPromptChange={setPrompt}
+          studyBoost={effectiveSettings?.study_boost ?? false}
+          onToggleStudyBoost={handleStudyBoostChange}
           activeModelTitle={activeModelTitle}
           activeModelSupportLabel={activeModelSupportLabel}
           runtimeLabel={runtimeLabel}
           effectiveRuntimeLabel={effectiveRuntimeLabel}
           modelStorageLabel={modelStorageLabel}
           onOpenSettings={() => setSettingsOpen(true)}
-          onSaveMarkdown={onSaveMarkdown}
-          canSaveMarkdown={Boolean(selectedJob?.output_path)}
+          onExportResult={onSaveMarkdown}
+          canExportResult={Boolean(selectedJob?.output_path || selectedRenderedMarkdown.trim())}
         />
       }
       preview={
         <PreviewWorkspace
           selectedJob={selectedJob}
           renderedMarkdown={selectedRenderedMarkdown}
+          modeDefinition={selectedJobModeDefinition}
           selectedStream={selectedStream}
+          activeModelLabel={activeModelTitle}
+          runtimeLabel={effectiveRuntimeLabel}
+          storageModeLabel={storageModeLabel(setupStorageMode)}
           onRetry={onRetryJob}
           onCancel={onCancelJob}
           onOpenOutputFolder={onOpenOutputFolder}
           onRevealInExplorer={onRevealInExplorer}
           onCopyMarkdown={onCopyMarkdown}
+          onExportResult={onSaveMarkdown}
           isCancelRequested={
             selectedJob ? Boolean(cancelingJobs[selectedJob.job_id]) : false
           }

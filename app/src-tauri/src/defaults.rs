@@ -1,4 +1,5 @@
 use crate::models;
+use crate::modes::{self, ModeDefinition};
 use crate::runtime::RuntimeProfile;
 use crate::settings::Settings;
 use serde::Serialize;
@@ -60,6 +61,8 @@ pub struct AppDefaults {
     pub theme: ThemeDefaults,
     pub runtime_profiles: RuntimeProfileDefaults,
     pub prompt: PromptDefaults,
+    pub workflow_modes: Vec<ModeDefinition>,
+    pub extract_templates: Vec<crate::extract::ExtractTemplateDefinition>,
     pub extraction_presets: Vec<ExtractionPreset>,
     pub recommended_model_profile_id: &'static str,
     pub recommended_model_label: &'static str,
@@ -181,6 +184,8 @@ pub fn app_defaults() -> AppDefaults {
             placeholder: DEFAULT_PROMPT_TEXT,
             hint: "Optional. Leave blank for the standard OCR prompt.",
         },
+        workflow_modes: modes::workflow_modes(),
+        extract_templates: crate::extract::extract_templates(),
         extraction_presets: extraction_presets(),
         recommended_model_profile_id: models::recommended_model_profile_id(),
         recommended_model_label: models::recommended_model_label(),

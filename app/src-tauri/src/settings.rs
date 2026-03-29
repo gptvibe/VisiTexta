@@ -1,5 +1,6 @@
 use crate::defaults;
 use crate::errors::Result;
+use crate::modes::{self, WorkflowMode};
 use crate::runtime::{self, RuntimeProfile};
 use crate::storage;
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,10 @@ pub struct Settings {
     pub dpi: u16,
     pub chunk_size: usize,
     pub auto_open: bool,
+    pub idle_model_prewarm: bool,
+    pub study_boost: bool,
+    pub workflow_mode: WorkflowMode,
+    pub extract_template_id: String,
     pub runtime_profile: RuntimeProfile,
     pub max_ocr_dimension: u32,
     pub lazy_preview_thumbnails: bool,
@@ -29,6 +34,10 @@ impl Default for Settings {
             dpi: 300,
             chunk_size: 3000,
             auto_open: false,
+            idle_model_prewarm: true,
+            study_boost: false,
+            workflow_mode: modes::default_workflow_mode(),
+            extract_template_id: crate::extract::default_extract_template_id().to_string(),
             runtime_profile: runtime::default_runtime_profile(),
             max_ocr_dimension: 1600,
             lazy_preview_thumbnails: false,
