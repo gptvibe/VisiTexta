@@ -107,7 +107,11 @@ const defaultDownloadState: ModelDownloadState = {
 }
 
 function isActiveStatus(status: JobStatus) {
-  return !['Done', 'Failed', 'Canceled'].includes(status)
+  return !isTerminalStatus(status)
+}
+
+function isTerminalStatus(status: JobStatus) {
+  return ['Done', 'Failed', 'Canceled'].includes(status)
 }
 
 function mergeJobs(previous: JobResult[], incoming: JobResult[]) {
@@ -747,8 +751,8 @@ function App() {
     [jobs]
   )
 
-  const completedJobs = useMemo(
-    () => jobs.filter((job) => job.status === 'Done').length,
+  const finishedJobs = useMemo(
+    () => jobs.filter((job) => isTerminalStatus(job.status)).length,
     [jobs]
   )
 
@@ -913,7 +917,7 @@ function App() {
         : 'Ready',
     },
     { label: 'In progress', value: activeJobs },
-    { label: 'Finished', value: completedJobs },
+    { label: 'Finished', value: finishedJobs },
     { label: 'Mode', value: selectedModeDefinition.short_label },
     {
       label: 'Preset',
@@ -1341,6 +1345,46 @@ function App() {
 
   async function refreshLocalCatalog() {
     await Promise.all([loadModelCatalog(), loadRuntimeStatus(effectiveRuntimeProfile ?? undefined)])
+  }
+
+  async function handleClearFinishedJobs() {
+    if (!finishedJobs) return
+
+    try {
+      const clearedCount = await invoke<number>('clear_terminal_job_history')
+      if (!clearedCount) return
+
+      const nextJobs = await invoke<JobResult[]>('get_job_history').catch(() =>
+        jobs.filter((job) => !isTerminalStatus(job.status))
+      )
+      const remainingIds = new Set(nextJobs.map((job) => job.job_id))
+
+      setJobs(nextJobs)
+      setStreams((prev) =>
+        Object.fromEntries(
+          Object.entries(prev).filter(([jobId]) => remainingIds.has(jobId))
+        )
+      )
+      setCancelingJobs((prev) =>
+        Object.fromEntries(
+          Object.entries(prev).filter(([jobId]) => remainingIds.has(jobId))
+        )
+      )
+      setSelectedId((current) => {
+        if (!current || remainingIds.has(current)) {
+          return current
+        }
+        return nextJobs[0]?.job_id ?? null
+      })
+      enqueueToast(
+        `Cleared ${clearedCount} finished job${clearedCount === 1 ? '' : 's'}`,
+        'success'
+      )
+    } catch (err) {
+      console.error(err)
+      const message = err instanceof Error ? err.message : String(err)
+      enqueueToast(message || 'Could not clear finished jobs.', 'error')
+    }
   }
 
   async function handlePaths(paths: string[]) {
@@ -1834,8 +1878,11 @@ function App() {
       queue={
         <JobQueue
           jobs={jobs}
+          activeCount={activeJobs}
+          finishedCount={finishedJobs}
           selectedId={selectedId}
           streams={streams}
+          onClearFinished={handleClearFinishedJobs}
           onSelect={setSelectedId}
         />
       }

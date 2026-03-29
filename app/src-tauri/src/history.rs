@@ -5,6 +5,7 @@ use crate::storage;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::path::Path;
 
 const HISTORY_VERSION: u8 = 1;
 const MAX_HISTORY_ENTRIES: usize = 100;
@@ -53,6 +54,11 @@ pub fn record_job(job: &JobResult) -> Result<()> {
     write_history_file(&history)
 }
 
+pub fn clear_terminal_jobs() -> Result<usize> {
+    let path = storage::history_path()?;
+    clear_terminal_jobs_at(&path)
+}
+
 pub fn recover_interrupted_jobs() -> Result<()> {
     let mut history = read_history_file()?;
     let mut changed = false;
@@ -79,7 +85,11 @@ pub fn recover_interrupted_jobs() -> Result<()> {
 }
 
 fn read_history_file() -> Result<JobHistoryFile> {
-    let path = storage::storage_paths()?.history_path;
+    let path = storage::history_path()?;
+    read_history_file_at(&path)
+}
+
+fn read_history_file_at(path: &Path) -> Result<JobHistoryFile> {
     let Ok(bytes) = fs::read(path) else {
         return Ok(JobHistoryFile::default());
     };
@@ -88,10 +98,33 @@ fn read_history_file() -> Result<JobHistoryFile> {
 }
 
 fn write_history_file(history: &JobHistoryFile) -> Result<()> {
-    let path = storage::storage_paths()?.history_path;
-    storage::ensure_parent_dir(&path)?;
+    let path = storage::history_path()?;
+    write_history_file_at(&path, history)
+}
+
+fn write_history_file_at(path: &Path, history: &JobHistoryFile) -> Result<()> {
+    storage::ensure_parent_dir(path)?;
     let bytes = serde_json::to_vec_pretty(history)?;
-    storage::atomic_write(&path, &bytes)
+    storage::atomic_write(path, &bytes)
+}
+
+fn clear_terminal_jobs_at(path: &Path) -> Result<usize> {
+    let mut history = read_history_file_at(path)?;
+    let cleared = clear_terminal_entries(&mut history);
+
+    if cleared > 0 {
+        write_history_file_at(path, &history)?;
+    }
+
+    Ok(cleared)
+}
+
+fn clear_terminal_entries(history: &mut JobHistoryFile) -> usize {
+    let before = history.entries.len();
+    history
+        .entries
+        .retain(|entry| !is_terminal_status(entry.job.status));
+    before.saturating_sub(history.entries.len())
 }
 
 fn is_terminal_status(status: JobStatus) -> bool {
@@ -99,4 +132,70 @@ fn is_terminal_status(status: JobStatus) -> bool {
         status,
         JobStatus::Done | JobStatus::Failed | JobStatus::Canceled
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn history_entry(job_id: &str, status: JobStatus) -> HistoryEntry {
+        HistoryEntry {
+            recorded_at: "2026-03-29T00:00:00Z".into(),
+            job: JobResult {
+                job_id: job_id.into(),
+                source: format!("{job_id}.pdf"),
+                output_path: None,
+                workflow_mode: crate::modes::default_workflow_mode(),
+                status,
+                error: None,
+                progress: Some(0.0),
+                message: None,
+            },
+        }
+    }
+
+    #[test]
+    fn clear_terminal_entries_removes_only_finished_jobs() {
+        let mut history = JobHistoryFile {
+            version: HISTORY_VERSION,
+            entries: vec![
+                history_entry("queued", JobStatus::Queued),
+                history_entry("done", JobStatus::Done),
+                history_entry("failed", JobStatus::Failed),
+                history_entry("canceled", JobStatus::Canceled),
+                history_entry("ocr", JobStatus::Ocr),
+            ],
+        };
+
+        let cleared = clear_terminal_entries(&mut history);
+
+        assert_eq!(cleared, 3);
+        assert_eq!(history.entries.len(), 2);
+        assert_eq!(history.entries[0].job.job_id, "queued");
+        assert_eq!(history.entries[1].job.job_id, "ocr");
+    }
+
+    #[test]
+    fn clear_terminal_jobs_persists_remaining_history() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let history_path = sandbox.path().join("history.json");
+        let history = JobHistoryFile {
+            version: HISTORY_VERSION,
+            entries: vec![
+                history_entry("done", JobStatus::Done),
+                history_entry("rendering", JobStatus::Rendering),
+                history_entry("failed", JobStatus::Failed),
+            ],
+        };
+
+        write_history_file_at(&history_path, &history).unwrap();
+
+        let cleared = clear_terminal_jobs_at(&history_path).unwrap();
+        let persisted = read_history_file_at(&history_path).unwrap();
+
+        assert_eq!(cleared, 2);
+        assert_eq!(persisted.entries.len(), 1);
+        assert_eq!(persisted.entries[0].job.job_id, "rendering");
+        assert_eq!(persisted.entries[0].job.status, JobStatus::Rendering);
+    }
 }

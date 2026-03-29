@@ -24,8 +24,11 @@ const statusLabel: Record<string, string> = {
 
 type FileQueueProps = {
   jobs: JobResult[]
+  activeCount: number
+  finishedCount: number
   selectedId?: string | null
   streams?: Record<string, JobStreamState>
+  onClearFinished: () => void
   onSelect: (jobId: string) => void
 }
 
@@ -34,10 +37,38 @@ function getFileName(path: string) {
   return parts[parts.length - 1] || path
 }
 
-export function FileQueue({ jobs, selectedId, streams, onSelect }: FileQueueProps) {
+function formatCount(value: number, label: string) {
+  return `${value} ${label}${value === 1 ? '' : 's'}`
+}
+
+export function FileQueue({
+  jobs,
+  activeCount,
+  finishedCount,
+  selectedId,
+  streams,
+  onClearFinished,
+  onSelect,
+}: FileQueueProps) {
   return (
     <div className="queue">
-      <div className="panel-title">Recent jobs</div>
+      <div className="queue-header">
+        <div className="panel-title queue-title">Recent jobs</div>
+        <div className="queue-header-side">
+          <div className="queue-counts">
+            <span>{formatCount(activeCount, 'active')}</span>
+            <span>{formatCount(finishedCount, 'finished')}</span>
+          </div>
+          <button
+            className="btn ghost queue-clear-btn"
+            disabled={finishedCount === 0}
+            onClick={() => onClearFinished()}
+            type="button"
+          >
+            Clear finished
+          </button>
+        </div>
+      </div>
       <div className="queue-list">
         {jobs.length === 0 && (
           <div className="queue-empty">No files yet. Drop, paste, or choose a file to start.</div>

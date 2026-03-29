@@ -67,6 +67,7 @@ pub fn run() {
             enqueue_jobs,
             enqueue_pasted_image,
             cancel_job,
+            clear_terminal_job_history,
             get_settings,
             get_app_defaults,
             get_runtime_status,
@@ -149,6 +150,11 @@ async fn enqueue_paths(
 #[tauri::command]
 fn cancel_job(job_id: String) -> bool {
     pipeline::request_cancel(&job_id)
+}
+
+#[tauri::command]
+fn clear_terminal_job_history() -> Result<usize, String> {
+    history::clear_terminal_jobs().map_err(|e| e.to_string())
 }
 
 #[tauri::command]

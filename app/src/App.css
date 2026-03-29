@@ -61,6 +61,40 @@
   height: 100%;
 }
 
+.queue-header,
+.queue-header-side,
+.queue-counts {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.queue-header {
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.queue-header-side {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.queue-title {
+  margin-bottom: 0;
+}
+
+.queue-counts {
+  color: var(--text-soft);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.queue-clear-btn {
+  white-space: nowrap;
+}
+
 .queue-list {
   display: flex;
   flex-direction: column;
@@ -1189,6 +1223,7 @@
   .dropzone-actions,
   .model-row,
   .drawer-footer,
+  .queue-header,
   .setup-card-header,
   .preset-header,
   .advanced-actions,
@@ -1240,5 +1275,14 @@
 
   .toast {
     min-width: 0;
+  }
+
+  .queue-header-side {
+    justify-content: space-between;
+    align-items: stretch;
+  }
+
+  .queue-counts {
+    white-space: normal;
   }
 }

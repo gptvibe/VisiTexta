@@ -80,7 +80,7 @@ pub struct ErrorEvent {
     pub message: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum JobStatus {
     Queued,
     Rendering,
