@@ -10,11 +10,11 @@ type StatusChipsProps = {
 
 export function StatusChips({ items }: StatusChipsProps) {
   return (
-    <div className="topbar-actions">
+    <div className="status-strip">
       {items.map((item) => (
         <div
           key={item.label}
-          className={`telemetry-card${item.wide ? ' wide' : ''}`}
+          className={`status-card${item.wide ? ' wide' : ''}`}
         >
           <span>{item.label}</span>
           <strong>{item.value}</strong>

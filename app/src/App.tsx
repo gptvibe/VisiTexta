@@ -817,12 +817,12 @@ function App() {
   const presetSummary = useMemo(() => {
     const templateSummary =
       selectedWorkflowMode === 'extract' && selectedExtractTemplate
-        ? ` ${selectedExtractTemplate.label} template is selected.`
+        ? ` · Template: ${selectedExtractTemplate.label}`
         : ''
     if (!selectedPreset) {
-      return `Using advanced custom DPI (${effectiveSettings?.dpi ?? 300}).${templateSummary}`
+      return `Custom DPI active · ${effectiveSettings?.dpi ?? 300} DPI${templateSummary}`
     }
-    return `${selectedPresetConfig?.label || 'Selected'} preset (${selectedPresetConfig?.dpi ?? effectiveSettings?.dpi ?? 300} DPI).${templateSummary}`
+    return `${selectedPresetConfig?.label || 'Selected'} preset · ${selectedPresetConfig?.dpi ?? effectiveSettings?.dpi ?? 300} DPI${templateSummary}`
   }, [
     effectiveSettings?.dpi,
     selectedExtractTemplate,
@@ -907,25 +907,6 @@ function App() {
           ? 'This only happens on first setup or after model files are removed.'
           : 'Open setup to install the recommended OCR model before starting extraction.'
 
-  const topBarStatusItems = [
-    {
-      label: 'Setup',
-      value: modelMissing
-        ? downloadState.status === 'error'
-          ? 'Needs attention'
-          : 'First run'
-        : 'Ready',
-    },
-    { label: 'In progress', value: activeJobs },
-    { label: 'Finished', value: finishedJobs },
-    { label: 'Mode', value: selectedModeDefinition.short_label },
-    {
-      label: 'Preset',
-      value: selectedPresetConfig?.label || (selectedPreset ? 'Selected' : 'Advanced custom'),
-      wide: true,
-    },
-  ]
-
   const runtimeLabel = effectiveRuntimeProfile
     ? runtimeProfileLabel(appDefaults, effectiveRuntimeProfile)
     : 'Loading...'
@@ -933,6 +914,41 @@ function App() {
     runtimeStatus?.effective_runtime_label || 'Checking local runtime...'
   const modelStorageLabel =
     storageInfo?.models_path || onboardingInfo?.model_storage_path || 'Loading...'
+  const selectedPresetLabel =
+    selectedPresetConfig?.label || (selectedPreset ? 'Selected' : 'Advanced custom')
+  const topBarStatusItems = [
+    {
+      label: 'Queue',
+      value: activeJobs ? `${activeJobs} active` : 'Idle',
+    },
+    {
+      label: 'Finished',
+      value: finishedJobs,
+    },
+    {
+      label: 'Runtime',
+      value: runtimeSetupIssue ? 'Needs attention' : runtimeLabel,
+    },
+    {
+      label: 'Model',
+      value: activeModelTitle,
+      wide: true,
+    },
+  ]
+  const topBarContextLabel = `${selectedModeDefinition.label} workflow`
+  const topBarContextDetail = [
+    `Preset: ${selectedPresetLabel}`,
+    selectedWorkflowMode === 'extract' && selectedExtractTemplate
+      ? `Template: ${selectedExtractTemplate.label}`
+      : null,
+    modelMissing
+      ? downloadState.status === 'error'
+        ? 'Setup needs attention'
+        : 'First-run setup required'
+      : 'Processing stays on this PC',
+  ]
+    .filter(Boolean)
+    .join(' • ')
 
   const handlePathsEvent = useEffectEvent((paths: string[]) => {
     void handlePaths(paths)
@@ -1865,9 +1881,12 @@ function App() {
     <AppShell
       topBar={
         <TopBar
+          contextLabel={topBarContextLabel}
+          contextDetail={topBarContextDetail}
           statusItems={topBarStatusItems}
           themeLabel={currentThemeLabel}
           onToggleTheme={handleThemeToggle}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
       }
       warning={

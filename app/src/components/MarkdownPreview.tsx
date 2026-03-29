@@ -179,6 +179,8 @@ export function MarkdownPreview({
 
   const stateLabel = previewStateLabel(job, isCancelRequested)
   const progressPercent = Math.min(100, Math.max(0, Math.round((job?.progress ?? 0) * 100)))
+  const activeTabId = `preview-tab-${activeTab}`
+  const activePanelId = `preview-panel-${activeTab}`
   const progressMessage =
     stream?.runner_message || job?.message || (job ? stateLabel : 'Choose a file to begin.')
   const pageStatus =
@@ -258,7 +260,12 @@ export function MarkdownPreview({
   const tabBody = (() => {
     if (activeTab === 'original') {
       return (
-        <div className="preview-tab-panel">
+        <div
+          className="preview-tab-panel"
+          id={activePanelId}
+          role="tabpanel"
+          aria-labelledby={activeTabId}
+        >
           <div className="preview-panel-header">
             <div>
               <div className="preview-panel-title">Original</div>
@@ -270,6 +277,7 @@ export function MarkdownPreview({
               <div className="preview-page-nav compact">
                 <button
                   className="btn ghost"
+                  type="button"
                   onClick={() => {
                     if (!activePage) return
                     setSelectedPageNumber(Math.max(1, activePage.page_number - 1))
@@ -280,6 +288,7 @@ export function MarkdownPreview({
                 </button>
                 <button
                   className="btn ghost"
+                  type="button"
                   onClick={() => {
                     if (!activePage) return
                     setSelectedPageNumber(Math.min(pages.length, activePage.page_number + 1))
@@ -310,6 +319,7 @@ export function MarkdownPreview({
                 <button
                   key={page.page_number}
                   className={`preview-thumbnail ${page.page_number === activePage?.page_number ? 'selected' : ''}`}
+                  type="button"
                   onClick={() => setSelectedPageNumber(page.page_number)}
                   role="tab"
                   aria-selected={page.page_number === activePage?.page_number}
@@ -331,7 +341,12 @@ export function MarkdownPreview({
 
     if (activeTab === 'ocr') {
       return (
-        <div className="preview-tab-panel">
+        <div
+          className="preview-tab-panel"
+          id={activePanelId}
+          role="tabpanel"
+          aria-labelledby={activeTabId}
+        >
           <div className="preview-panel-header">
             <div>
               <div className="preview-panel-title">Live OCR</div>
@@ -351,7 +366,12 @@ export function MarkdownPreview({
 
     if (activeTab === 'export') {
       return (
-        <div className="preview-tab-panel">
+        <div
+          className="preview-tab-panel"
+          id={activePanelId}
+          role="tabpanel"
+          aria-labelledby={activeTabId}
+        >
           <div className="preview-panel-header">
             <div>
               <div className="preview-panel-title">Export</div>
@@ -376,13 +396,28 @@ export function MarkdownPreview({
             ))}
           </div>
           <div className="preview-export-actions">
-            <button className="btn primary" onClick={onCopyMarkdown} disabled={!canCopy}>
+            <button
+              className="btn primary"
+              type="button"
+              onClick={onCopyMarkdown}
+              disabled={!canCopy}
+            >
               {modeDefinition.copy_action_label}
             </button>
-            <button className="btn ghost" onClick={onOpenOutputFolder} disabled={!canOpenFolder}>
+            <button
+              className="btn ghost"
+              type="button"
+              onClick={onOpenOutputFolder}
+              disabled={!canOpenFolder}
+            >
               Open output folder
             </button>
-            <button className="btn ghost" onClick={onRevealInExplorer} disabled={!canReveal}>
+            <button
+              className="btn ghost"
+              type="button"
+              onClick={onRevealInExplorer}
+              disabled={!canReveal}
+            >
               Reveal in Explorer
             </button>
           </div>
@@ -391,7 +426,12 @@ export function MarkdownPreview({
     }
 
     return (
-      <div className="preview-tab-panel">
+      <div
+        className="preview-tab-panel"
+        id={activePanelId}
+        role="tabpanel"
+        aria-labelledby={activeTabId}
+      >
         <div className="preview-panel-header">
           <div>
             <div className="preview-panel-title">{modeDefinition.result_label}</div>
@@ -414,7 +454,7 @@ export function MarkdownPreview({
       <div className="panel-title">Workspace</div>
       {!job && (
         <div className="preview-empty">
-          {`Choose a job to review the original pages, live OCR, ${modeDefinition.result_label.toLowerCase()}, and export options.`}
+          {`Select a job from Recent jobs to inspect source pages, live OCR, ${modeDefinition.result_label.toLowerCase()}, and export actions.`}
         </div>
       )}
       {job && (
@@ -455,10 +495,10 @@ export function MarkdownPreview({
               <strong>{progressMessage}</strong>
             </div>
             <div className="preview-actions compact">
-              <button className="btn ghost" onClick={onRetry} disabled={!canRetry}>
+              <button className="btn ghost" type="button" onClick={onRetry} disabled={!canRetry}>
                 Retry
               </button>
-              <button className="btn ghost" onClick={onCancel} disabled={!canCancel}>
+              <button className="btn ghost" type="button" onClick={onCancel} disabled={!canCancel}>
                 {isCancelRequested ? 'Stopping...' : 'Cancel'}
               </button>
             </div>
@@ -471,6 +511,9 @@ export function MarkdownPreview({
               <button
                 key={tab.id}
                 type="button"
+                id={`preview-tab-${tab.id}`}
+                role="tab"
+                aria-controls={`preview-panel-${tab.id}`}
                 className={`preview-tab ${activeTab === tab.id ? 'active' : ''}`}
                 aria-selected={activeTab === tab.id}
                 onClick={() => setActiveTab(tab.id)}

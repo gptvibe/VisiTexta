@@ -32,22 +32,22 @@ export function DropZone({ disabled, onBrowse, onPasteImage, onFiles }: DropZone
           .filter(Boolean) as string[]
         onFiles(paths)
       }}
-    >
+      >
       <div className="dropzone-inner">
-        <div className="dropzone-eyebrow">PNG, JPG, JPEG, PDF</div>
-        <div className="dropzone-title">Drop files here</div>
+        <div className="dropzone-eyebrow">Supported inputs: PNG, JPG, JPEG, PDF</div>
+        <div className="dropzone-title">Add documents</div>
         <div className="dropzone-subtitle">
-          Everything stays on this PC. You can also paste a screenshot or copied image.
+          Process scans, screenshots, and PDFs locally. Browse for files or paste an image from the clipboard.
         </div>
         <div className="dropzone-actions">
-          <button className="btn primary" onClick={onBrowse} disabled={disabled}>
+          <button className="btn primary" type="button" onClick={onBrowse} disabled={disabled}>
             Choose files
           </button>
-          <button className="btn ghost" onClick={onPasteImage} disabled={disabled}>
+          <button className="btn ghost" type="button" onClick={onPasteImage} disabled={disabled}>
             Paste image
           </button>
         </div>
-        <div className="dropzone-hint">Tip: press Ctrl+V when an image is on your clipboard.</div>
+        <div className="dropzone-hint">Tip: press Ctrl+V when a copied image is ready.</div>
       </div>
     </div>
   )

@@ -62,6 +62,38 @@ type ImportPanelProps = {
   canExportResult: boolean
 }
 
+function compactExportLabel(exportOption: WorkflowModeExport) {
+  switch (exportOption.id) {
+    case 'markdown':
+      return 'Markdown'
+    case 'text':
+      return 'Text'
+    case 'json':
+      return 'JSON'
+    case 'pdf':
+      return 'PDF'
+    case 'csv':
+      return exportOption.label.toLowerCase().includes('anki') ? 'Anki CSV' : 'CSV'
+    default:
+      return exportOption.label
+  }
+}
+
+function templateOutputChips(template: ExtractTemplateDefinition) {
+  switch (template.id) {
+    case 'invoice_receipt':
+      return ['Markdown', 'JSON', 'CSV rows']
+    case 'table_to_csv':
+      return ['Markdown', 'JSON table', 'CSV']
+    case 'meeting_whiteboard':
+      return ['Markdown', 'JSON', 'CSV actions']
+    case 'contract_key_points':
+      return ['Markdown', 'JSON', 'CSV fields']
+    default:
+      return ['Markdown', 'JSON']
+  }
+}
+
 export function ImportPanel({
   modeDefinition,
   modeOptions,
@@ -109,31 +141,38 @@ export function ImportPanel({
     <section className="panel command-panel">
       <div className="panel-title">{modeDefinition.label}</div>
       <div className="command-copy">
-        {modeDefinition.helper} Pick the speed and quality you want, then drop files, paste an
-        image, or browse for files from your computer.
+        {modeDefinition.helper} Choose a preset, then add a file to begin.
       </div>
 
-      <section className="preset-section" aria-label="Workflow modes">
-        <div className="preset-header">
-          <div className="section-title">Modes</div>
-          <div className="preset-note">{modeDefinition.description}</div>
+      <section className="import-section workflow-section" aria-label="Workflow modes">
+        <div className="import-section-header">
+          <div className="section-title">Workflow modes</div>
+          <div className="import-section-copy">
+            Choose how VisiTexta should shape the result before you start.
+          </div>
         </div>
-        <div className="preset-grid">
+        <div className="workflow-grid">
           {modeOptions.map((mode) => {
             const selected = selectedMode === mode.id
             return (
               <button
                 key={mode.id}
                 type="button"
-                className={`preset-card ${selected ? 'selected' : ''}`}
+                className={`import-card workflow-card ${selected ? 'selected' : ''}`}
                 aria-pressed={selected}
                 onClick={() => onSelectMode(mode.id)}
               >
-                <span className="preset-name">{mode.label}</span>
-                <span className="preset-copy">{mode.description}</span>
-                <span className="preset-meta">
-                  {mode.available_exports.map((exportOption) => exportOption.label).join(' + ')}
-                </span>
+                <div className="workflow-card-body">
+                  <span className="workflow-card-title">{mode.label}</span>
+                  <span className="workflow-card-description">{mode.description}</span>
+                </div>
+                <div className="workflow-chip-list">
+                  {mode.available_exports.map((exportOption) => (
+                    <span key={exportOption.id} className="import-chip workflow-chip">
+                      {compactExportLabel(exportOption)}
+                    </span>
+                  ))}
+                </div>
               </button>
             )
           })}
@@ -174,19 +213,19 @@ export function ImportPanel({
             </div>
           )}
           <div className="advanced-actions">
-            <button className="btn primary" onClick={onOpenSetupWizard}>
+            <button className="btn primary" type="button" onClick={onOpenSetupWizard}>
               Open setup
             </button>
           </div>
         </section>
       )}
 
-      <section className="preset-section" aria-label="Extraction presets">
-        <div className="preset-header">
-          <div className="section-title">Presets</div>
-          <div className="preset-note">{presetSummary}</div>
+      <section className="import-section speed-section" aria-label="Extraction presets">
+        <div className="import-section-header">
+          <div className="section-title">Speed presets</div>
+          <div className="import-section-copy">{presetSummary}</div>
         </div>
-        <div className="preset-grid">
+        <div className="speed-grid">
           {presetOrder.map((key) => {
             const preset = presetOptions.find((option) => option.id === key)
             if (!preset) return null
@@ -196,13 +235,16 @@ export function ImportPanel({
               <button
                 key={key}
                 type="button"
-                className={`preset-card ${selected ? 'selected' : ''}`}
+                className={`import-card speed-card ${selected ? 'selected' : ''}`}
                 aria-pressed={selected}
                 onClick={() => onSelectPreset(key, preset.label)}
               >
-                <span className="preset-name">{preset.label}</span>
-                <span className="preset-copy">{preset.description}</span>
-                <span className="preset-meta">{preset.meta}</span>
+                <div className="speed-card-top">
+                  <span className="speed-card-title">{preset.label}</span>
+                  <span className="import-chip speed-chip">{preset.dpi} DPI</span>
+                </div>
+                <span className="speed-card-summary">{preset.meta}</span>
+                <span className="speed-card-detail">{preset.description}</span>
               </button>
             )
           })}
@@ -227,6 +269,7 @@ export function ImportPanel({
       <div className="advanced-toggle">
         <button
           className="btn ghost"
+          type="button"
           aria-expanded={advancedOpen}
           aria-controls="advanced-panel"
           onClick={onToggleAdvanced}
@@ -269,27 +312,35 @@ export function ImportPanel({
             </label>
           )}
           {selectedMode === 'extract' && extractTemplates.length > 0 && (
-            <section className="preset-section" aria-label="Extract templates">
-              <div className="preset-header">
+            <section className="import-section template-section" aria-label="Extract templates">
+              <div className="import-section-header">
                 <div className="section-title">Extract templates</div>
-                <div className="preset-note">
+                <div className="import-section-copy">
                   Choose the output shape that best matches the document you are reviewing.
                 </div>
               </div>
-              <div className="preset-grid">
+              <div className="template-grid">
                 {extractTemplates.map((template) => {
                   const selected = selectedExtractTemplateId === template.id
                   return (
                     <button
                       key={template.id}
                       type="button"
-                      className={`preset-card ${selected ? 'selected' : ''}`}
+                      className={`import-card template-card ${selected ? 'selected' : ''}`}
                       aria-pressed={selected}
                       onClick={() => onSelectExtractTemplate(template.id)}
                     >
-                      <span className="preset-name">{template.label}</span>
-                      <span className="preset-copy">{template.description}</span>
-                      <span className="preset-meta">{template.csv_hint}</span>
+                      <div className="template-card-body">
+                        <span className="template-card-title">{template.label}</span>
+                        <span className="template-card-usecase">{template.helper}</span>
+                      </div>
+                      <div className="template-chip-list">
+                        {templateOutputChips(template).map((chip) => (
+                          <span key={chip} className="import-chip template-chip">
+                            {chip}
+                          </span>
+                        ))}
+                      </div>
                     </button>
                   )
                 })}
@@ -313,13 +364,14 @@ export function ImportPanel({
             </div>
           </div>
           <div className="advanced-actions">
-            <button className="btn ghost" onClick={onOpenSettings}>
+            <button className="btn ghost" type="button" onClick={onOpenSettings}>
               Advanced settings
             </button>
             {modeDefinition.available_exports.map((exportOption) => (
               <button
                 key={exportOption.id}
                 className={`btn ${exportOption.primary ? 'primary' : 'ghost'}`}
+                type="button"
                 onClick={() => onExportResult(exportOption.id)}
                 disabled={!canExportResult}
                 title={exportOption.description}

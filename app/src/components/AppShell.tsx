@@ -24,15 +24,17 @@ export function AppShell({
   toasts,
 }: AppShellProps) {
   return (
-    <div className="app">
-      {topBar}
-      {warning}
-      <main className="workspace">
-        {queue}
-        {importPanel}
-        {preview}
-      </main>
-      {footer}
+    <div className="app-shell">
+      <div className="app">
+        <div className="app-topbar-slot">{topBar}</div>
+        {warning ? <div className="app-warning-slot">{warning}</div> : null}
+        <main className="workspace">
+          <aside className="workspace-rail">{queue}</aside>
+          <section className="workspace-task">{importPanel}</section>
+          <section className="workspace-preview">{preview}</section>
+        </main>
+        <div className="app-footer-slot">{footer}</div>
+      </div>
       {drawer}
       {overlay}
       {toasts}

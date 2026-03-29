@@ -124,19 +124,19 @@ export function FirstRunWizard({
         )}
 
         <div className="first-run-actions">
-          <button className="btn ghost" onClick={onOpenSettings}>
+          <button className="btn ghost" type="button" onClick={onOpenSettings}>
             Advanced settings
           </button>
           <div className="first-run-action-group">
-            <button className="btn ghost" onClick={onCancel}>
+            <button className="btn ghost" type="button" onClick={onCancel}>
               {isWorking ? 'Hide' : 'Cancel'}
             </button>
             {canRetry ? (
-              <button className="btn primary" onClick={onRetry}>
+              <button className="btn primary" type="button" onClick={onRetry}>
                 Retry download
               </button>
             ) : canStart ? (
-              <button className="btn primary" onClick={onStart} disabled={isWorking}>
+              <button className="btn primary" type="button" onClick={onStart} disabled={isWorking}>
                 {isWorking ? 'Preparing...' : 'Download recommended model'}
               </button>
             ) : null}

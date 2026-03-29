@@ -106,6 +106,7 @@ function renderProfileCard(
         </div>
         <button
           className="btn ghost"
+          type="button"
           onClick={() => onDownloadModel(profile.id)}
           disabled={isDownloading}
         >
@@ -235,7 +236,7 @@ export function SettingsDrawer({
       <div className="drawer-panel model-drawer-panel">
         <div className="drawer-header">
           <div className="panel-title">Advanced settings</div>
-          <button className="btn ghost" onClick={onClose}>
+          <button className="btn ghost" type="button" onClick={onClose}>
             Close
           </button>
         </div>
