@@ -24,6 +24,7 @@ public sealed class ModelRegistryService : IModelRegistryService
             Family = "GLM-OCR",
             Repo = "mradermacher/GLM-OCR-GGUF",
             DefaultFile = "GLM-OCR.Q4_K_M.gguf",
+            PreferredMmprojFile = "GLM-OCR.mmproj-Q8_0.gguf",
             RequiresMmproj = true,
             Tested = true,
             Recommended = true,
@@ -126,6 +127,7 @@ public sealed class ModelRegistryService : IModelRegistryService
             if (string.IsNullOrWhiteSpace(profile.Label)) errors.Add($"{profile.Id} is missing a label.");
             if (string.IsNullOrWhiteSpace(profile.Repo) || !profile.Repo.Contains('/')) errors.Add($"{profile.Id} has an invalid repo.");
             if (string.IsNullOrWhiteSpace(profile.DefaultFile) || !profile.DefaultFile.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)) errors.Add($"{profile.Id} has an invalid default GGUF file.");
+            if (profile.RequiresMmproj && profile.PreferredMmprojFile is not null && !profile.PreferredMmprojFile.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)) errors.Add($"{profile.Id} has an invalid preferred mmproj file.");
             if (profile.FileMarkers.Count == 0) errors.Add($"{profile.Id} should define file markers.");
         }
 
@@ -199,7 +201,8 @@ public sealed class ModelRegistryService : IModelRegistryService
         if (profile is not null)
         {
             candidates = candidates
-                .OrderByDescending(path => profile.FileMarkers.Any(marker => Path.GetFileName(path).Contains(marker, StringComparison.OrdinalIgnoreCase)))
+                .OrderByDescending(path => Path.GetFileName(path).Equals(profile.PreferredMmprojFile, StringComparison.OrdinalIgnoreCase))
+                .ThenByDescending(path => profile.FileMarkers.Any(marker => Path.GetFileName(path).Contains(marker, StringComparison.OrdinalIgnoreCase)))
                 .ThenBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase);
         }
 

@@ -11,6 +11,8 @@ namespace App_Desktop.Pages;
 
 public sealed partial class ModelsPage : Page
 {
+    private bool _isDownloading;
+
     public ModelsPage()
     {
         InitializeComponent();
@@ -25,6 +27,7 @@ public sealed partial class ModelsPage : Page
     private async Task RenderAsync()
     {
         ModelsStackPanel.Children.Clear();
+        CustomLocatorTextBox.IsEnabled = !_isDownloading;
         var catalog = await AppServices.ModelRegistry.GetCatalogAsync();
         foreach (var profile in catalog.Profiles)
         {
@@ -54,26 +57,23 @@ public sealed partial class ModelsPage : Page
         text.Children.Add(new TextBlock { Text = profile.Recommended ? profile.Label + " (Recommended)" : profile.Label, FontSize = 18, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
         text.Children.Add(new TextBlock { Text = $"{profile.Repo} - {profile.DefaultFile}", Style = (Style)Application.Current.Resources["MutedTextBlockStyle"] });
         text.Children.Add(new TextBlock { Text = profile.Notes, Style = (Style)Application.Current.Resources["MutedTextBlockStyle"] });
-        text.Children.Add(new TextBlock
-        {
-            Text = local is null
-                ? "Not downloaded"
-                : local.RuntimeReady
-                    ? $"Ready: {local.FilePath}"
-                    : "Downloaded, but companion mmproj is missing",
-            Style = (Style)Application.Current.Resources["MutedTextBlockStyle"]
-        });
+        text.Children.Add(new TextBlock { Text = BuildModelStatus(profile, local), Style = (Style)Application.Current.Resources["MutedTextBlockStyle"] });
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-        var download = new Button { Content = local is null ? "Download" : "Redownload", Tag = profile.Id };
+        var download = new Button
+        {
+            Content = local is null ? "Download" : local.RuntimeReady ? "Redownload" : "Finish setup",
+            Tag = profile.Id,
+            IsEnabled = !_isDownloading
+        };
         download.Click += DownloadProfile_Click;
         actions.Children.Add(download);
 
-        var open = new Button { Content = "Open Folder", IsEnabled = local is not null, Tag = AppServices.Paths.ModelsDirectory };
+        var open = new Button { Content = "Open Folder", IsEnabled = local is not null && !_isDownloading, Tag = AppServices.Paths.ModelsDirectory };
         open.Click += OpenFolder_Click;
         actions.Children.Add(open);
 
-        var delete = new Button { Content = "Delete", IsEnabled = local is not null, Tag = local?.FileName };
+        var delete = new Button { Content = "Delete", IsEnabled = local is not null && !_isDownloading, Tag = local?.FileName };
         delete.Click += Delete_Click;
         actions.Children.Add(delete);
 
@@ -90,7 +90,7 @@ public sealed partial class ModelsPage : Page
         var text = new StackPanel { Spacing = 5 };
         text.Children.Add(new TextBlock { Text = model.Label, FontSize = 18, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
         text.Children.Add(new TextBlock { Text = $"{model.SupportTier} - {(model.RuntimeReady ? "ready" : "needs mmproj")} - {model.FilePath}", Style = (Style)Application.Current.Resources["MutedTextBlockStyle"] });
-        var open = new Button { Content = "Open Folder", Tag = Path.GetDirectoryName(model.FilePath), HorizontalAlignment = HorizontalAlignment.Left };
+        var open = new Button { Content = "Open Folder", Tag = Path.GetDirectoryName(model.FilePath), HorizontalAlignment = HorizontalAlignment.Left, IsEnabled = !_isDownloading };
         open.Click += OpenFolder_Click;
         text.Children.Add(open);
         root.Child = text;
@@ -119,26 +119,40 @@ public sealed partial class ModelsPage : Page
 
     private async Task DownloadAsync(string locator)
     {
+        if (_isDownloading)
+        {
+            return;
+        }
+
+        _isDownloading = true;
         DownloadProgressBar.Value = 0;
+        DownloadProgressBar.IsIndeterminate = true;
         DownloadStatusTextBlock.Text = "Starting download";
+        await RenderAsync();
         try
         {
             await AppServices.ModelDownloads.DownloadAsync(locator, new Progress<ModelDownloadProgress>(progress =>
             {
-                DownloadStatusTextBlock.Text = progress.Message;
+                DownloadStatusTextBlock.Text = BuildDownloadStatus(progress);
                 if (progress.Percent is not null)
                 {
+                    DownloadProgressBar.IsIndeterminate = false;
                     DownloadProgressBar.Value = progress.Percent.Value;
                 }
             }));
             DownloadStatusTextBlock.Text = "Model ready";
-            await RenderAsync();
         }
         catch (Exception ex)
         {
             AppServices.Diagnostics.RecordError(ex.Message);
             DownloadStatusTextBlock.Text = "Download failed";
             await ShowErrorAsync("Download failed", ex.Message);
+        }
+        finally
+        {
+            _isDownloading = false;
+            DownloadProgressBar.IsIndeterminate = false;
+            await RenderAsync();
         }
     }
 
@@ -157,6 +171,53 @@ public sealed partial class ModelsPage : Page
         {
             Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
         }
+    }
+
+    private static string BuildDownloadStatus(ModelDownloadProgress progress)
+    {
+        if (progress.TotalBytes is null)
+        {
+            return $"{progress.Message} - {progress.FileName}";
+        }
+
+        return $"{progress.Message} - {FormatBytes(progress.DownloadedBytes)} / {FormatBytes(progress.TotalBytes.Value)}";
+    }
+
+    private static string BuildModelStatus(OcrModelProfile profile, LocalOcrModelInfo? local)
+    {
+        if (local is null)
+        {
+            return "Not downloaded";
+        }
+
+        if (local.RuntimeReady)
+        {
+            var companion = string.IsNullOrWhiteSpace(local.MmprojPath) ? "no companion needed" : Path.GetFileName(local.MmprojPath);
+            return $"Ready - {Path.GetFileName(local.FilePath)} + {companion}";
+        }
+
+        var expected = profile.PreferredMmprojFile ?? "companion mmproj";
+        var partPath = Path.Combine(AppServices.Paths.ModelsDirectory, expected + ".part");
+        if (File.Exists(partPath))
+        {
+            return $"Main model downloaded. Companion is incomplete - {FormatBytes(new FileInfo(partPath).Length)} saved.";
+        }
+
+        return $"Main model downloaded. Companion missing - click Finish setup.";
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB"];
+        var value = (double)bytes;
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+
+        return unit == 0 ? $"{bytes} {units[unit]}" : $"{value:0.0} {units[unit]}";
     }
 
     private async Task ShowErrorAsync(string title, string message)

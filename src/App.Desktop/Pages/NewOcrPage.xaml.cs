@@ -19,6 +19,7 @@ public sealed partial class NewOcrPage : Page
     private CancellationTokenSource? _cts;
     private string? _sourcePath;
     private string? _outputPath;
+    private bool _hasReadyModel;
 
     public NewOcrPage()
     {
@@ -28,21 +29,30 @@ public sealed partial class NewOcrPage : Page
 
     private async void NewOcrPage_Loaded(object sender, RoutedEventArgs e)
     {
-        WorkflowComboBox.ItemsSource = Enum.GetValues<OcrWorkflowMode>();
-        RuntimeComboBox.ItemsSource = Enum.GetValues<RuntimeProfile>();
+        var workflowOptions = Enum.GetValues<OcrWorkflowMode>().Select(mode => new DisplayOption<OcrWorkflowMode>(mode, FormatWorkflowMode(mode))).ToList();
+        var runtimeOptions = Enum.GetValues<RuntimeProfile>().Select(profile => new DisplayOption<RuntimeProfile>(profile, FormatRuntimeProfile(profile))).ToList();
+        WorkflowComboBox.ItemsSource = workflowOptions;
+        RuntimeComboBox.ItemsSource = runtimeOptions;
         ExtractTemplateComboBox.ItemsSource = new[] { "invoice_receipt", "table_to_csv", "meeting_whiteboard", "contract_key_points" };
 
         var settings = await AppServices.Settings.LoadAsync();
-        WorkflowComboBox.SelectedItem = settings.DefaultWorkflowMode;
-        RuntimeComboBox.SelectedItem = settings.RuntimeProfile;
+        WorkflowComboBox.SelectedItem = workflowOptions.FirstOrDefault(option => option.Value == settings.DefaultWorkflowMode);
+        RuntimeComboBox.SelectedItem = runtimeOptions.FirstOrDefault(option => option.Value == settings.RuntimeProfile);
         ExtractTemplateComboBox.SelectedItem = settings.ExtractTemplateId;
         DpiNumberBox.Value = settings.Dpi;
         MaxDimensionNumberBox.Value = settings.MaxOcrDimension;
         StudyBoostCheckBox.IsChecked = settings.StudyBoost;
 
         var catalog = await AppServices.ModelRegistry.GetCatalogAsync();
-        ModelComboBox.ItemsSource = catalog.LocalModels.Count > 0 ? catalog.LocalModels : catalog.Profiles.Select(profile => new LocalOcrModelInfo { Label = profile.Label, ProfileId = profile.Id, FileName = profile.DefaultFile }).ToList();
+        var readyModels = catalog.LocalModels.Where(model => model.RuntimeReady).ToList();
+        _hasReadyModel = readyModels.Count > 0;
+        ModelComboBox.ItemsSource = readyModels.Count > 0
+            ? readyModels
+            : catalog.LocalModels.Count > 0
+                ? catalog.LocalModels
+                : catalog.Profiles.Select(profile => new LocalOcrModelInfo { Label = profile.Label, ProfileId = profile.Id, FileName = profile.DefaultFile }).ToList();
         ModelComboBox.SelectedIndex = 0;
+        StatusTextBlock.Text = _hasReadyModel ? "Ready" : "Finish model setup first";
         UpdateModeControls();
     }
 
@@ -53,8 +63,9 @@ public sealed partial class NewOcrPage : Page
 
     private void UpdateModeControls()
     {
-        ExtractTemplateComboBox.IsEnabled = WorkflowComboBox.SelectedItem is OcrWorkflowMode.Extract;
-        StudyBoostCheckBox.IsEnabled = WorkflowComboBox.SelectedItem is OcrWorkflowMode.Notes;
+        var workflow = WorkflowComboBox.SelectedItem is DisplayOption<OcrWorkflowMode> option ? option.Value : OcrWorkflowMode.ExactOcr;
+        ExtractTemplateComboBox.IsEnabled = workflow is OcrWorkflowMode.Extract;
+        StudyBoostCheckBox.IsEnabled = workflow is OcrWorkflowMode.Notes;
     }
 
     private void DropZone_DragOver(object sender, DragEventArgs e)
@@ -97,8 +108,12 @@ public sealed partial class NewOcrPage : Page
     {
         _sourcePath = path;
         SourceTextBox.Text = path;
-        StartButton.IsEnabled = true;
+        StartButton.IsEnabled = _hasReadyModel;
         OutputMetaTextBlock.Text = Path.GetFileName(path);
+        if (!_hasReadyModel)
+        {
+            StatusTextBlock.Text = "Open Models and finish setup before running OCR";
+        }
     }
 
     private async void Start_Click(object sender, RoutedEventArgs e)
@@ -120,8 +135,15 @@ public sealed partial class NewOcrPage : Page
         try
         {
             var selectedModel = ModelComboBox.SelectedItem as LocalOcrModelInfo;
-            var workflow = WorkflowComboBox.SelectedItem is OcrWorkflowMode mode ? mode : OcrWorkflowMode.ExactOcr;
-            var runtime = RuntimeComboBox.SelectedItem is RuntimeProfile profile ? profile : RuntimeProfile.CpuCompatible;
+            if (selectedModel is null || !selectedModel.RuntimeReady)
+            {
+                StatusTextBlock.Text = "Model setup incomplete";
+                await ShowErrorAsync("Model setup incomplete", "Open Models and click Finish setup so the OCR model and its companion mmproj file are both installed.");
+                return;
+            }
+
+            var workflow = WorkflowComboBox.SelectedItem is DisplayOption<OcrWorkflowMode> workflowOption ? workflowOption.Value : OcrWorkflowMode.ExactOcr;
+            var runtime = RuntimeComboBox.SelectedItem is DisplayOption<RuntimeProfile> runtimeOption ? runtimeOption.Value : RuntimeProfile.CpuCompatible;
             var options = new OcrJobOptions
             {
                 SourcePath = _sourcePath,
@@ -164,7 +186,7 @@ public sealed partial class NewOcrPage : Page
             _cts?.Dispose();
             _cts = null;
             CancelButton.IsEnabled = false;
-            StartButton.IsEnabled = _sourcePath is not null;
+            StartButton.IsEnabled = _sourcePath is not null && _hasReadyModel;
         }
     }
 
@@ -185,7 +207,8 @@ public sealed partial class NewOcrPage : Page
 
     private void AppendDelta(string delta)
     {
-        OutputTextBox.Text += delta;
+        OutputTextBox.SelectionStart = OutputTextBox.Text.Length;
+        OutputTextBox.SelectedText = delta;
         OutputTextBox.SelectionStart = OutputTextBox.Text.Length;
     }
 
@@ -207,6 +230,33 @@ public sealed partial class NewOcrPage : Page
     private static int SafeNumber(double value, int fallback)
     {
         return double.IsNaN(value) || value <= 0 ? fallback : (int)Math.Round(value);
+    }
+
+    private static string FormatWorkflowMode(OcrWorkflowMode mode)
+    {
+        return mode switch
+        {
+            OcrWorkflowMode.ExactOcr => "Exact OCR",
+            OcrWorkflowMode.Notes => "Notes",
+            OcrWorkflowMode.Extract => "Extract",
+            _ => mode.ToString()
+        };
+    }
+
+    private static string FormatRuntimeProfile(RuntimeProfile profile)
+    {
+        return profile switch
+        {
+            RuntimeProfile.Auto => "Auto",
+            RuntimeProfile.CpuCompatible => "CPU compatible",
+            RuntimeProfile.AcceleratedIfAvailable => "Accelerated if available",
+            _ => profile.ToString()
+        };
+    }
+
+    private sealed record DisplayOption<T>(T Value, string Label)
+    {
+        public override string ToString() => Label;
     }
 
     private static void InitializePicker(object picker)

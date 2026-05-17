@@ -1,18 +1,32 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using App.Models;
 using App_Desktop.Pages;
 using Microsoft.UI.Windowing;
+using Microsoft.UI;
+using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Windows.UI;
 
 namespace App_Desktop;
 
 public sealed partial class MainWindow : Window
 {
+    private static readonly Color ShellBackgroundColor = Color.FromArgb(255, 248, 246, 242);
+    private static readonly Color SidebarBackgroundColor = Color.FromArgb(255, 22, 22, 20);
+    private static readonly Color SidebarButtonHoverColor = Color.FromArgb(255, 40, 40, 37);
+    private static readonly Color SidebarButtonActiveColor = Color.FromArgb(255, 55, 55, 51);
+    private static readonly Color SidebarTextColor = Color.FromArgb(255, 242, 240, 235);
+    private static readonly Color SidebarMutedTextColor = Color.FromArgb(255, 164, 160, 151);
+    private static readonly Color AccentColor = Color.FromArgb(255, 16, 163, 127);
+
     private readonly Grid _rootGrid = new();
     private readonly Frame _navFrame = new();
+    private readonly Dictionary<Type, NavButtonVisuals> _navButtons = new();
     private readonly TextBlock _pageErrorTextBlock = new()
     {
         Margin = new Thickness(24),
@@ -27,36 +41,94 @@ public sealed partial class MainWindow : Window
         ApplySystemBackdrop();
         Title = "VisiTexta";
         ApplyWindowIcon();
+        ApplyTitleBarColors();
         _rootGrid.Loaded += MainWindow_Loaded;
     }
 
     private void BuildShell()
     {
-        _rootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(220) });
+        _rootGrid.Background = new SolidColorBrush(ShellBackgroundColor);
+        _rootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(260) });
         _rootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         var sidebar = new Border
         {
-            Padding = new Thickness(16),
-            BorderThickness = new Thickness(0, 0, 1, 0)
+            Padding = new Thickness(18, 18, 18, 16),
+            Background = new SolidColorBrush(SidebarBackgroundColor)
         };
         Grid.SetColumn(sidebar, 0);
 
-        var sidebarStack = new StackPanel { Spacing = 12 };
-        sidebarStack.Children.Add(new TextBlock
+        var sidebarGrid = new Grid { RowSpacing = 18 };
+        sidebarGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        sidebarGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        sidebarGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        var brand = new Grid { ColumnSpacing = 12, Margin = new Thickness(2, 2, 2, 10) };
+        brand.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        brand.ColumnDefinitions.Add(new ColumnDefinition());
+        brand.Children.Add(new Border
+        {
+            Width = 34,
+            Height = 34,
+            CornerRadius = new CornerRadius(8),
+            Background = new SolidColorBrush(AccentColor),
+            Child = new FontIcon
+            {
+                Glyph = "\uE8A5",
+                FontSize = 17,
+                Foreground = new SolidColorBrush(Colors.White)
+            }
+        });
+
+        var brandText = new StackPanel { Spacing = 0, VerticalAlignment = VerticalAlignment.Center };
+        brandText.Children.Add(new TextBlock
         {
             Text = "VisiTexta",
-            FontSize = 24,
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold
+            FontSize = 18,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(SidebarTextColor)
         });
-        sidebarStack.Children.Add(CreateNavButton("New OCR", typeof(NewOcrPage)));
-        sidebarStack.Children.Add(CreateNavButton("Models", typeof(ModelsPage)));
-        sidebarStack.Children.Add(CreateNavButton("History", typeof(HistoryPage)));
-        sidebarStack.Children.Add(CreateNavButton("Settings", typeof(SettingsPage)));
-        sidebarStack.Children.Add(CreateNavButton("Diagnostics", typeof(DiagnosticsPage)));
-        sidebar.Child = sidebarStack;
+        brandText.Children.Add(new TextBlock
+        {
+            Text = "Local OCR workspace",
+            FontSize = 12,
+            Foreground = new SolidColorBrush(SidebarMutedTextColor)
+        });
+        Grid.SetColumn(brandText, 1);
+        brand.Children.Add(brandText);
+        sidebarGrid.Children.Add(brand);
 
-        var contentGrid = new Grid();
+        var navStack = new StackPanel { Spacing = 6 };
+        Grid.SetRow(navStack, 1);
+        navStack.Children.Add(CreateNavButton("New OCR", "\uE8B7", typeof(NewOcrPage)));
+        navStack.Children.Add(CreateNavButton("Models", "\uE8D4", typeof(ModelsPage)));
+        navStack.Children.Add(CreateNavButton("History", "\uE81C", typeof(HistoryPage)));
+        navStack.Children.Add(CreateNavButton("Settings", "\uE713", typeof(SettingsPage)));
+        navStack.Children.Add(CreateNavButton("Diagnostics", "\uE9D9", typeof(DiagnosticsPage)));
+        sidebarGrid.Children.Add(navStack);
+
+        var footer = new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Background = new SolidColorBrush(Color.FromArgb(255, 32, 32, 29)),
+            Padding = new Thickness(12),
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Child = new TextBlock
+            {
+                Text = "Private by default. Models and OCR stay on this PC.",
+                TextWrapping = TextWrapping.WrapWholeWords,
+                FontSize = 12,
+                Foreground = new SolidColorBrush(SidebarMutedTextColor)
+            }
+        };
+        Grid.SetRow(footer, 2);
+        sidebarGrid.Children.Add(footer);
+        sidebar.Child = sidebarGrid;
+
+        var contentGrid = new Grid
+        {
+            Background = new SolidColorBrush(ShellBackgroundColor)
+        };
         Grid.SetColumn(contentGrid, 1);
         contentGrid.Children.Add(_navFrame);
         contentGrid.Children.Add(_pageErrorTextBlock);
@@ -65,10 +137,53 @@ public sealed partial class MainWindow : Window
         _rootGrid.Children.Add(contentGrid);
     }
 
-    private Button CreateNavButton(string label, Type pageType)
+    private Button CreateNavButton(string label, string glyph, Type pageType)
     {
-        var button = new Button { Content = label };
+        var icon = new FontIcon
+        {
+            Glyph = glyph,
+            Width = 18,
+            FontSize = 16,
+            Foreground = new SolidColorBrush(SidebarMutedTextColor)
+        };
+        var text = new TextBlock
+        {
+            Text = label,
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(SidebarMutedTextColor),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var content = new Grid { ColumnSpacing = 12 };
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        content.ColumnDefinitions.Add(new ColumnDefinition());
+        content.Children.Add(icon);
+        Grid.SetColumn(text, 1);
+        content.Children.Add(text);
+
+        var button = new Button
+        {
+            Content = content,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Height = 42,
+            Padding = new Thickness(12, 0, 12, 0),
+            Background = new SolidColorBrush(Colors.Transparent),
+            BorderBrush = new SolidColorBrush(Colors.Transparent),
+            CornerRadius = new CornerRadius(8),
+            Tag = pageType
+        };
+        AutomationProperties.SetName(button, label);
         button.Click += (_, _) => NavigateTo(pageType);
+        button.PointerEntered += (_, _) =>
+        {
+            if (_navFrame.CurrentSourcePageType != pageType)
+            {
+                button.Background = new SolidColorBrush(SidebarButtonHoverColor);
+            }
+        };
+        button.PointerExited += (_, _) => UpdateActiveNavButton(_navFrame.CurrentSourcePageType);
+        _navButtons[pageType] = new NavButtonVisuals(button, icon, text);
         return button;
     }
 
@@ -114,6 +229,23 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void ApplyTitleBarColors()
+    {
+        var titleBar = AppWindow.TitleBar;
+        titleBar.BackgroundColor = SidebarBackgroundColor;
+        titleBar.ForegroundColor = SidebarTextColor;
+        titleBar.ButtonBackgroundColor = SidebarBackgroundColor;
+        titleBar.ButtonForegroundColor = SidebarTextColor;
+        titleBar.ButtonHoverBackgroundColor = SidebarButtonHoverColor;
+        titleBar.ButtonHoverForegroundColor = SidebarTextColor;
+        titleBar.ButtonPressedBackgroundColor = SidebarButtonActiveColor;
+        titleBar.ButtonPressedForegroundColor = SidebarTextColor;
+        titleBar.InactiveBackgroundColor = SidebarBackgroundColor;
+        titleBar.InactiveForegroundColor = SidebarMutedTextColor;
+        titleBar.ButtonInactiveBackgroundColor = SidebarBackgroundColor;
+        titleBar.ButtonInactiveForegroundColor = SidebarMutedTextColor;
+    }
+
     private void NavigateTo(Type pageType)
     {
         if (_navFrame.CurrentSourcePageType == pageType)
@@ -126,6 +258,7 @@ public sealed partial class MainWindow : Window
             _pageErrorTextBlock.Visibility = Visibility.Collapsed;
             _navFrame.Visibility = Visibility.Visible;
             _navFrame.Navigate(pageType);
+            UpdateActiveNavButton(pageType);
         }
         catch (Exception ex)
         {
@@ -135,4 +268,18 @@ public sealed partial class MainWindow : Window
             _pageErrorTextBlock.Visibility = Visibility.Visible;
         }
     }
+
+    private void UpdateActiveNavButton(Type? activePageType)
+    {
+        foreach (var pair in _navButtons)
+        {
+            var active = pair.Key == activePageType;
+            pair.Value.Button.Background = new SolidColorBrush(active ? SidebarButtonActiveColor : Colors.Transparent);
+            pair.Value.Button.BorderBrush = new SolidColorBrush(Colors.Transparent);
+            pair.Value.Icon.Foreground = new SolidColorBrush(active ? AccentColor : SidebarMutedTextColor);
+            pair.Value.Label.Foreground = new SolidColorBrush(active ? SidebarTextColor : SidebarMutedTextColor);
+        }
+    }
+
+    private sealed record NavButtonVisuals(Button Button, FontIcon Icon, TextBlock Label);
 }

@@ -140,20 +140,16 @@ static async Task RunJobAsync(OcrWorkerJob job)
         string rawText;
         try
         {
-            rawText = await RecognizeImageAsync(cliCandidates, job, page.ImagePath);
+            rawText = await RecognizeImageAsync(cliCandidates, job, page.ImagePath, delta =>
+            {
+                Emit(new { @event = "text_delta", job_id = job.JobId, page_number = page.PageNumber, delta });
+            });
         }
         catch (Exception ex)
         {
             Emit(new { @event = "error", job_id = job.JobId, code = "runtime_failed", message = "Local OCR runtime failed: " + ex.Message, recoverable = true });
             return;
         }
-
-        foreach (var delta in Chunk(rawText, 180))
-        {
-            Emit(new { @event = "text_delta", job_id = job.JobId, page_number = page.PageNumber, delta });
-            await Task.Delay(12);
-        }
-
         var markdown = $"## Page {page.PageNumber}\n\n{rawText.Trim()}\n";
         pageMarkdown.Add(markdown);
         recognizedPages++;
@@ -182,14 +178,14 @@ static async Task RunJobAsync(OcrWorkerJob job)
     Emit(new { @event = "done", job_id = job.JobId, status = "done", pages = totalPages, output_markdown_path = job.OutputMarkdownPath, elapsed_ms = stopwatch.ElapsedMilliseconds, warnings = Array.Empty<string>() });
 }
 
-static async Task<string> RecognizeImageAsync(IReadOnlyList<string> cliCandidates, OcrWorkerJob job, string imagePath)
+static async Task<string> RecognizeImageAsync(IReadOnlyList<string> cliCandidates, OcrWorkerJob job, string imagePath, Action<string> onTextDelta)
 {
     var errors = new List<string>();
     foreach (var cliPath in cliCandidates)
     {
         try
         {
-            var text = await RunLlamaCliAsync(cliPath, job, imagePath);
+            var text = await RunLlamaCliAsync(cliPath, job, imagePath, onTextDelta);
             if (!string.IsNullOrWhiteSpace(text))
             {
                 return text;
@@ -210,7 +206,7 @@ static async Task<string> RecognizeImageAsync(IReadOnlyList<string> cliCandidate
     throw new InvalidOperationException(errors.Count == 0 ? "No local llama OCR runtime was available." : string.Join(" | ", errors));
 }
 
-static async Task<string> RunLlamaCliAsync(string cliPath, OcrWorkerJob job, string imagePath)
+static async Task<string> RunLlamaCliAsync(string cliPath, OcrWorkerJob job, string imagePath, Action<string> onTextDelta)
 {
     var prompt = string.IsNullOrWhiteSpace(job.PromptOverride)
         ? "Transcribe the visible document text as markdown."
@@ -246,17 +242,38 @@ static async Task<string> RunLlamaCliAsync(string cliPath, OcrWorkerJob job, str
     }
 
     process.Start();
-    var stdoutTask = process.StandardOutput.ReadToEndAsync();
     var stderrTask = process.StandardError.ReadToEndAsync();
+    var stdout = new StringBuilder();
+    var streamed = new StringBuilder();
+    var buffer = new char[4096];
+    int read;
+    while ((read = await process.StandardOutput.ReadAsync(buffer.AsMemory(0, buffer.Length))) > 0)
+    {
+        stdout.Append(buffer.AsSpan(0, read));
+        var sanitized = Sanitize(stdout.ToString());
+        var delta = NormalizeDelta(streamed.ToString(), sanitized);
+        if (!string.IsNullOrEmpty(delta))
+        {
+            streamed.Append(delta);
+            onTextDelta(delta);
+        }
+    }
+
     await process.WaitForExitAsync();
-    var stdout = await stdoutTask;
     var stderr = await stderrTask;
     if (process.ExitCode != 0)
     {
         throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? "llama runtime exited with an error." : CompactRuntimeError(stderr));
     }
 
-    return Sanitize(stdout);
+    var final = Sanitize(stdout.ToString());
+    var finalDelta = NormalizeDelta(streamed.ToString(), final);
+    if (!string.IsNullOrEmpty(finalDelta))
+    {
+        onTextDelta(finalDelta);
+    }
+
+    return final;
 }
 
 static IEnumerable<string> ResolveLlamaCliCandidates(OcrWorkerJob job)
@@ -365,12 +382,16 @@ static string CompactRuntimeError(string text)
     return compact.Length <= 1200 ? compact : compact[..1200] + "...";
 }
 
-static IEnumerable<string> Chunk(string text, int size)
+static string NormalizeDelta(string emitted, string current)
 {
-    for (var index = 0; index < text.Length; index += size)
+    if (current.Length <= emitted.Length)
     {
-        yield return text.Substring(index, Math.Min(size, text.Length - index));
+        return string.Empty;
     }
+
+    return current.StartsWith(emitted, StringComparison.Ordinal)
+        ? current[emitted.Length..]
+        : string.Empty;
 }
 
 static void Emit(object payload)

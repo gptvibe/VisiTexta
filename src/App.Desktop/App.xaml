@@ -9,7 +9,9 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
 
-            <CornerRadius x:Key="PanelCornerRadius">12</CornerRadius>
+            <SolidColorBrush x:Key="CardBackgroundBrush" Color="#FFFCFAF7" />
+            <SolidColorBrush x:Key="CardBorderBrush" Color="#24181715" />
+            <CornerRadius x:Key="PanelCornerRadius">8</CornerRadius>
             <Thickness x:Key="PanelPadding">18</Thickness>
 
             <Style x:Key="SectionTitleTextBlockStyle" TargetType="TextBlock">
@@ -24,8 +26,8 @@
             </Style>
 
             <Style x:Key="CardBorderStyle" TargetType="Border">
-                <Setter Property="Background" Value="Transparent" />
-                <Setter Property="BorderBrush" Value="#33000000" />
+                <Setter Property="Background" Value="{StaticResource CardBackgroundBrush}" />
+                <Setter Property="BorderBrush" Value="{StaticResource CardBorderBrush}" />
                 <Setter Property="BorderThickness" Value="1" />
                 <Setter Property="CornerRadius" Value="{StaticResource PanelCornerRadius}" />
                 <Setter Property="Padding" Value="{StaticResource PanelPadding}" />

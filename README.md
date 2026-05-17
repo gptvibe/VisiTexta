@@ -160,7 +160,7 @@ dotnet run --project src/App.Desktop/App.Desktop.csproj -p:RuntimeIdentifier=win
 Build native portable release:
 
 ```powershell
-.\scripts\build-release.ps1 -Version 3.0.5
+.\scripts\build-release.ps1 -Version 3.0.6
 ```
 
 This command produces the Windows-native portable zip under `artifacts/release/`.

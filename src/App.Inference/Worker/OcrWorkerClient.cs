@@ -50,7 +50,11 @@ public sealed class OcrWorkerClient : IOcrWorkerClient
         var jobId = Guid.NewGuid().ToString();
         var jobTemp = _paths.CreateJobTempDirectory(jobId);
         var outputPath = _paths.GetDuplicateSafeOutputPath(effectiveOptions.SourcePath, OcrExportFormat.Markdown);
-        var model = await _models.ResolveActiveModelAsync(settings, cancellationToken);
+        var model = await _models.ResolveActiveModelAsync(settings with
+        {
+            ModelProfileId = effectiveOptions.ModelProfileId,
+            ModelFile = effectiveOptions.ModelFile
+        }, cancellationToken);
         var runtime = _runtimeDetection.GetRuntimeStatus(effectiveOptions.RuntimeProfile);
         var warnings = new List<string>();
         var pageMarkdown = new SortedDictionary<int, string>();
@@ -73,6 +77,16 @@ public sealed class OcrWorkerClient : IOcrWorkerClient
 
         try
         {
+        if (model is null)
+        {
+            throw new OcrWorkerException("No ready local OCR model was found. Open Models and download the recommended GLM-OCR profile.");
+        }
+
+        if (model.RequiresMmproj && string.IsNullOrWhiteSpace(model.MmprojPath))
+        {
+            throw new OcrWorkerException("The selected OCR model is missing its companion mmproj file. Open Models and click Finish setup.");
+        }
+
         using var process = CreateProcess();
         try
         {

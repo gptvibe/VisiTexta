@@ -21,6 +21,8 @@ public sealed record OcrModelProfile
 
     public string DefaultFile { get; init; } = string.Empty;
 
+    public string? PreferredMmprojFile { get; init; }
+
     public bool RequiresMmproj { get; init; }
 
     public bool Tested { get; init; }

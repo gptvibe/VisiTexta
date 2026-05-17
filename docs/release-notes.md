@@ -1,5 +1,18 @@
 # Release Notes
 
+## 3.0.6
+
+VisiTexta 3.0.6 improves the native app shell, model setup, and live OCR responsiveness after the 3.0.5 startup fix.
+
+Highlights:
+
+- The native shell now uses a darker Codex-style sidebar, neutral window chrome, tighter cards, and clearer active navigation.
+- GLM-OCR downloads now prefer the smaller `GLM-OCR.mmproj-Q8_0.gguf` companion file, so the recommended setup reaches a ready state faster.
+- The Models page now distinguishes installed, incomplete, and ready model states, and shows `Finish setup` when only the companion file is missing.
+- Model download progress is throttled to keep the UI responsive during large GGUF downloads.
+- The OCR worker now forwards llama stdout deltas while the runtime is still running instead of waiting for the whole process to exit.
+- OCR output appends text without rebuilding the whole text box content for every chunk.
+
 ## 3.0.5
 
 VisiTexta 3.0.5 fixes the New OCR page crash introduced while wiring native streaming output.

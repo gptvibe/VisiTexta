@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Diagnostics;
 using App.Core.Contracts;
 using App.Models;
 
@@ -19,7 +20,7 @@ public sealed class ModelDownloadService : IModelDownloadService
         _paths = paths;
         _registry = registry;
         _httpClient = httpClient ?? new HttpClient();
-        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("VisiTexta-Native/3.0.5");
+        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("VisiTexta-Native/3.0.6");
     }
 
     public async Task<ModelDownloadResult> DownloadAsync(
@@ -41,11 +42,7 @@ public sealed class ModelDownloadService : IModelDownloadService
         string? downloadedMmproj = null;
         if (plan.Profile?.RequiresMmproj == true)
         {
-            var mmprojFile = plan.Files
-                .Where(file => file.Name.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) && file.Name.Contains("mmproj", StringComparison.OrdinalIgnoreCase))
-                .OrderBy(file => file.Name.Contains("f16", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
-                .ThenBy(file => file.Size ?? long.MaxValue)
-                .FirstOrDefault();
+            var mmprojFile = SelectMmprojFile(plan.Profile, plan.Files);
             if (mmprojFile is null)
             {
                 throw new InvalidOperationException("This model requires a companion mmproj file, but none was found in the Hugging Face repo.");
@@ -135,7 +132,7 @@ public sealed class ModelDownloadService : IModelDownloadService
 
     private async Task<IReadOnlyList<RemoteFileMetadata>> FetchFilesAsync(string repo, CancellationToken cancellationToken)
     {
-        using var response = await _httpClient.GetAsync($"{HuggingFaceApiBase}/{repo}/tree/main", cancellationToken);
+        using var response = await _httpClient.GetAsync($"{HuggingFaceApiBase}/{repo}/tree/main?recursive=true", cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException($"Unable to read model files from Hugging Face: {(int)response.StatusCode} {response.ReasonPhrase}");
@@ -312,24 +309,79 @@ public sealed class ModelDownloadService : IModelDownloadService
         await using var output = new FileStream(partPath, resumeFrom > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read);
         var buffer = new byte[1024 * 128];
         var downloaded = resumeFrom;
+        var lastReportedBytes = resumeFrom;
+        var reportTimer = Stopwatch.StartNew();
         int read;
         while ((read = await input.ReadAsync(buffer, cancellationToken)) > 0)
         {
             await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
             downloaded += read;
-            progress?.Report(new ModelDownloadProgress
+
+            if (downloaded - lastReportedBytes >= 4L * 1024 * 1024 || reportTimer.ElapsedMilliseconds >= 500)
             {
-                Repo = repo,
-                FileName = fileName,
-                DownloadedBytes = downloaded,
-                TotalBytes = metadata.Size,
-                Status = ModelDownloadStatus.Downloading,
-                Message = "Downloading " + fileName
-            });
+                progress?.Report(new ModelDownloadProgress
+                {
+                    Repo = repo,
+                    FileName = fileName,
+                    DownloadedBytes = downloaded,
+                    TotalBytes = metadata.Size,
+                    Status = ModelDownloadStatus.Downloading,
+                    Message = "Downloading " + fileName
+                });
+                lastReportedBytes = downloaded;
+                reportTimer.Restart();
+            }
         }
+
+        progress?.Report(new ModelDownloadProgress
+        {
+            Repo = repo,
+            FileName = fileName,
+            DownloadedBytes = downloaded,
+            TotalBytes = metadata.Size,
+            Status = ModelDownloadStatus.Downloading,
+            Message = "Downloading " + fileName
+        });
 
         await output.FlushAsync(cancellationToken);
         return downloaded;
+    }
+
+    private static RemoteFileMetadata? SelectMmprojFile(OcrModelProfile? profile, IReadOnlyList<RemoteFileMetadata> files)
+    {
+        var candidates = files
+            .Where(file => file.Name.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) && file.Name.Contains("mmproj", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (profile?.PreferredMmprojFile is not null)
+        {
+            var preferred = candidates.FirstOrDefault(file => file.Name.Equals(profile.PreferredMmprojFile, StringComparison.OrdinalIgnoreCase));
+            if (preferred is not null)
+            {
+                return preferred;
+            }
+        }
+
+        return candidates
+            .OrderBy(file => MmprojRank(file.Name))
+            .ThenBy(file => file.Size ?? long.MaxValue)
+            .ThenBy(file => file.Name, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+    }
+
+    private static int MmprojRank(string fileName)
+    {
+        if (fileName.Contains("q8", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+
+        if (fileName.Contains("f16", StringComparison.OrdinalIgnoreCase) || fileName.Contains("fp16", StringComparison.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        return 2;
     }
 
     private async Task<bool> TryUseExistingFileAsync(
