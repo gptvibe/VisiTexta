@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 using App.Models;
 using App_Desktop.Pages;
 using Microsoft.UI.Windowing;
@@ -27,12 +29,19 @@ public sealed partial class MainWindow : Window
     private readonly Grid _rootGrid = new();
     private readonly Frame _navFrame = new();
     private readonly Dictionary<Type, NavButtonVisuals> _navButtons = new();
+    private readonly StackPanel _historyStackPanel = new() { Spacing = 6 };
+    private readonly TextBlock _historySummaryTextBlock = new()
+    {
+        FontSize = 12,
+        Foreground = new SolidColorBrush(SidebarMutedTextColor)
+    };
     private readonly TextBlock _pageErrorTextBlock = new()
     {
         Margin = new Thickness(24),
         TextWrapping = TextWrapping.Wrap,
         Visibility = Visibility.Collapsed
     };
+    private string? _selectedHistoryId;
 
     public MainWindow()
     {
@@ -48,7 +57,7 @@ public sealed partial class MainWindow : Window
     private void BuildShell()
     {
         _rootGrid.Background = new SolidColorBrush(ShellBackgroundColor);
-        _rootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(260) });
+        _rootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(312) });
         _rootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         var sidebar = new Border
@@ -62,6 +71,8 @@ public sealed partial class MainWindow : Window
         sidebarGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         sidebarGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         sidebarGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        sidebarGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        sidebarGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         var brand = new Grid { ColumnSpacing = 12, Margin = new Thickness(2, 2, 2, 10) };
         brand.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -98,14 +109,63 @@ public sealed partial class MainWindow : Window
         brand.Children.Add(brandText);
         sidebarGrid.Children.Add(brand);
 
-        var navStack = new StackPanel { Spacing = 6 };
-        Grid.SetRow(navStack, 1);
-        navStack.Children.Add(CreateNavButton("New OCR", "\uE8B7", typeof(NewOcrPage)));
-        navStack.Children.Add(CreateNavButton("Models", "\uE8D4", typeof(ModelsPage)));
-        navStack.Children.Add(CreateNavButton("History", "\uE81C", typeof(HistoryPage)));
-        navStack.Children.Add(CreateNavButton("Settings", "\uE713", typeof(SettingsPage)));
-        navStack.Children.Add(CreateNavButton("Diagnostics", "\uE9D9", typeof(DiagnosticsPage)));
-        sidebarGrid.Children.Add(navStack);
+        var workspaceStack = new StackPanel { Spacing = 10 };
+        Grid.SetRow(workspaceStack, 1);
+        workspaceStack.Children.Add(new TextBlock
+        {
+            Text = "Workspace",
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(SidebarMutedTextColor)
+        });
+        workspaceStack.Children.Add(CreateNavButton("New OCR", "\uE8B7", typeof(NewOcrPage), OpenNewWorkspace, true));
+        sidebarGrid.Children.Add(workspaceStack);
+
+        var historyPanel = new Border
+        {
+            Padding = new Thickness(12),
+            CornerRadius = new CornerRadius(12),
+            Background = new SolidColorBrush(Color.FromArgb(255, 32, 32, 29))
+        };
+        Grid.SetRow(historyPanel, 2);
+        var historyGrid = new Grid { RowSpacing = 10 };
+        historyGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        historyGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        var historyHeader = new StackPanel { Spacing = 2 };
+        historyHeader.Children.Add(new TextBlock
+        {
+            Text = "Recent transcripts",
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(SidebarTextColor)
+        });
+        historyHeader.Children.Add(_historySummaryTextBlock);
+        historyGrid.Children.Add(historyHeader);
+
+        var historyScroller = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Content = _historyStackPanel
+        };
+        Grid.SetRow(historyScroller, 1);
+        historyGrid.Children.Add(historyScroller);
+        historyPanel.Child = historyGrid;
+        sidebarGrid.Children.Add(historyPanel);
+
+        var utilityStack = new StackPanel { Spacing = 8 };
+        Grid.SetRow(utilityStack, 3);
+        utilityStack.Children.Add(new TextBlock
+        {
+            Text = "Library",
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(SidebarMutedTextColor)
+        });
+        utilityStack.Children.Add(CreateNavButton("Models", "\uE8D4", typeof(ModelsPage)));
+        utilityStack.Children.Add(CreateNavButton("Settings", "\uE713", typeof(SettingsPage)));
+        utilityStack.Children.Add(CreateNavButton("Diagnostics", "\uE9D9", typeof(DiagnosticsPage)));
+        sidebarGrid.Children.Add(utilityStack);
 
         var footer = new Border
         {
@@ -121,7 +181,7 @@ public sealed partial class MainWindow : Window
                 Foreground = new SolidColorBrush(SidebarMutedTextColor)
             }
         };
-        Grid.SetRow(footer, 2);
+        Grid.SetRow(footer, 4);
         sidebarGrid.Children.Add(footer);
         sidebar.Child = sidebarGrid;
 
@@ -137,7 +197,7 @@ public sealed partial class MainWindow : Window
         _rootGrid.Children.Add(contentGrid);
     }
 
-    private Button CreateNavButton(string label, string glyph, Type pageType)
+    private Button CreateNavButton(string label, string glyph, Type pageType, Action? clickAction = null, bool emphasize = false)
     {
         var icon = new FontIcon
         {
@@ -166,15 +226,25 @@ public sealed partial class MainWindow : Window
             Content = content,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            Height = 42,
+            Height = emphasize ? 46 : 42,
             Padding = new Thickness(12, 0, 12, 0),
             Background = new SolidColorBrush(Colors.Transparent),
             BorderBrush = new SolidColorBrush(Colors.Transparent),
-            CornerRadius = new CornerRadius(8),
+            CornerRadius = new CornerRadius(emphasize ? 10 : 8),
             Tag = pageType
         };
         AutomationProperties.SetName(button, label);
-        button.Click += (_, _) => NavigateTo(pageType);
+        button.Click += (_, _) =>
+        {
+            if (clickAction is not null)
+            {
+                clickAction();
+            }
+            else
+            {
+                NavigateTo(pageType);
+            }
+        };
         button.PointerEntered += (_, _) =>
         {
             if (_navFrame.CurrentSourcePageType != pageType)
@@ -218,6 +288,135 @@ public sealed partial class MainWindow : Window
         }
 
         NavigateTo(typeof(NewOcrPage));
+        await RefreshSidebarHistoryAsync();
+    }
+
+    private async void OpenNewWorkspace()
+    {
+        _selectedHistoryId = null;
+        await RefreshSidebarHistoryAsync();
+
+        if (_navFrame.CurrentSourcePageType == typeof(NewOcrPage) && _navFrame.Content is NewOcrPage currentPage)
+        {
+            await currentPage.ResetForNewRunAsync();
+            UpdateActiveNavButton(typeof(NewOcrPage));
+            return;
+        }
+
+        NavigateTo(typeof(NewOcrPage));
+    }
+
+    public async Task RefreshSidebarHistoryAsync(string? selectHistoryId = null)
+    {
+        if (!string.IsNullOrWhiteSpace(selectHistoryId))
+        {
+            _selectedHistoryId = selectHistoryId;
+        }
+
+        _historyStackPanel.Children.Clear();
+        _historySummaryTextBlock.Text = "Loading local history...";
+
+        var items = (await AppServices.HistoryService.GetHistoryAsync()).Take(14).ToList();
+        if (items.Count == 0)
+        {
+            _historySummaryTextBlock.Text = "No transcripts yet";
+            _historyStackPanel.Children.Add(new TextBlock
+            {
+                Text = "Run OCR once and recent transcripts will stay here for quick reopening.",
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 12,
+                Foreground = new SolidColorBrush(SidebarMutedTextColor)
+            });
+            return;
+        }
+
+        _historySummaryTextBlock.Text = items.Count == 1 ? "1 recent transcript" : $"{items.Count} recent transcripts";
+        foreach (var item in items)
+        {
+            _historyStackPanel.Children.Add(CreateHistoryButton(item));
+        }
+    }
+
+    public async Task OpenHistoryItemAsync(string id)
+    {
+        var item = await AppServices.HistoryService.GetAsync(id);
+        if (item is null)
+        {
+            await RefreshSidebarHistoryAsync();
+            return;
+        }
+
+        _selectedHistoryId = id;
+        await RefreshSidebarHistoryAsync();
+
+        if (_navFrame.CurrentSourcePageType != typeof(NewOcrPage))
+        {
+            NavigateTo(typeof(NewOcrPage));
+        }
+
+        if (_navFrame.Content is NewOcrPage page)
+        {
+            await page.OpenHistoryItemAsync(item);
+            UpdateActiveNavButton(typeof(NewOcrPage));
+        }
+    }
+
+    private Button CreateHistoryButton(OcrHistoryItem item)
+    {
+        var active = string.Equals(_selectedHistoryId, item.Id, StringComparison.OrdinalIgnoreCase);
+        var sourceLine = new TextBlock
+        {
+            Text = item.SourceName,
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(SidebarTextColor),
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        var metaLine = new TextBlock
+        {
+            Text = $"{item.UpdatedAt:g} • {item.WorkflowMode} • {item.Status}",
+            FontSize = 11,
+            Foreground = new SolidColorBrush(SidebarMutedTextColor),
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        var detailLine = new TextBlock
+        {
+            Text = item.OutputPath is { Length: > 0 } path ? Path.GetFileName(path) : item.Error ?? "No output yet",
+            FontSize = 11,
+            Foreground = new SolidColorBrush(SidebarMutedTextColor),
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+
+        var button = new Button
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(10, 8, 10, 8),
+            Background = new SolidColorBrush(active ? SidebarButtonActiveColor : Colors.Transparent),
+            BorderBrush = new SolidColorBrush(active ? AccentColor : Colors.Transparent),
+            BorderThickness = new Thickness(active ? 1 : 0),
+            CornerRadius = new CornerRadius(10),
+            Content = new StackPanel
+            {
+                Spacing = 2,
+                Children = { sourceLine, metaLine, detailLine }
+            }
+        };
+        AutomationProperties.SetName(button, $"Open transcript {item.SourceName}");
+        button.Click += async (_, _) => await OpenHistoryItemAsync(item.Id);
+        button.PointerEntered += (_, _) =>
+        {
+            if (!string.Equals(_selectedHistoryId, item.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                button.Background = new SolidColorBrush(SidebarButtonHoverColor);
+            }
+        };
+        button.PointerExited += (_, _) =>
+        {
+            var isSelected = string.Equals(_selectedHistoryId, item.Id, StringComparison.OrdinalIgnoreCase);
+            button.Background = new SolidColorBrush(isSelected ? SidebarButtonActiveColor : Colors.Transparent);
+        };
+        return button;
     }
 
     private void ApplyWindowIcon()

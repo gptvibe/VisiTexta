@@ -1,5 +1,16 @@
 # Release Notes
 
+## 3.0.7
+
+VisiTexta 3.0.7 reshapes the native Windows app into a transcript-first workspace instead of splitting OCR and history into separate destinations.
+
+Highlights:
+
+- The native shell sidebar now keeps recent transcripts visible while you work, so reopening a past OCR run no longer requires a separate History page.
+- The main OCR workspace now loads selected transcript history back into the editor/output pane on the right, closer to a ChatGPT or Codex-style layout.
+- Run OCR actions move to the top of the workspace so starting a new job is visible immediately instead of being buried below the configuration stack.
+- First launch now auto-downloads the recommended local OCR model when no runtime-ready model is installed, using the same native curated downloader and progress reporting as the Models page.
+
 ## 3.0.6
 
 VisiTexta 3.0.6 improves the native app shell, model setup, and live OCR responsiveness after the 3.0.5 startup fix.

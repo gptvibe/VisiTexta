@@ -16,10 +16,15 @@ namespace App_Desktop.Pages;
 
 public sealed partial class NewOcrPage : Page
 {
+    private readonly TaskCompletionSource _initializationCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private CancellationTokenSource? _cts;
     private string? _sourcePath;
     private string? _outputPath;
     private bool _hasReadyModel;
+    private bool _initialized;
+    private bool _isAutoDownloading;
+    private string? _recommendedProfileId;
+    private string? _recommendedModelLabel;
 
     public NewOcrPage()
     {
@@ -29,6 +34,12 @@ public sealed partial class NewOcrPage : Page
 
     private async void NewOcrPage_Loaded(object sender, RoutedEventArgs e)
     {
+        if (_initialized)
+        {
+            return;
+        }
+
+        _initialized = true;
         var workflowOptions = Enum.GetValues<OcrWorkflowMode>().Select(mode => new DisplayOption<OcrWorkflowMode>(mode, FormatWorkflowMode(mode))).ToList();
         var runtimeOptions = Enum.GetValues<RuntimeProfile>().Select(profile => new DisplayOption<RuntimeProfile>(profile, FormatRuntimeProfile(profile))).ToList();
         WorkflowComboBox.ItemsSource = workflowOptions;
@@ -43,17 +54,16 @@ public sealed partial class NewOcrPage : Page
         MaxDimensionNumberBox.Value = settings.MaxOcrDimension;
         StudyBoostCheckBox.IsChecked = settings.StudyBoost;
 
-        var catalog = await AppServices.ModelRegistry.GetCatalogAsync();
-        var readyModels = catalog.LocalModels.Where(model => model.RuntimeReady).ToList();
-        _hasReadyModel = readyModels.Count > 0;
-        ModelComboBox.ItemsSource = readyModels.Count > 0
-            ? readyModels
-            : catalog.LocalModels.Count > 0
-                ? catalog.LocalModels
-                : catalog.Profiles.Select(profile => new LocalOcrModelInfo { Label = profile.Label, ProfileId = profile.Id, FileName = profile.DefaultFile }).ToList();
-        ModelComboBox.SelectedIndex = 0;
-        StatusTextBlock.Text = _hasReadyModel ? "Ready" : "Finish model setup first";
+        await RefreshModelChoicesAsync();
+        StatusTextBlock.Text = _hasReadyModel ? "Ready" : "Preparing recommended model";
         UpdateModeControls();
+        UpdateStartAvailability();
+        _initializationCompletion.TrySetResult();
+
+        if (!_hasReadyModel)
+        {
+            _ = EnsureRecommendedModelReadyAsync();
+        }
     }
 
     private void WorkflowComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -108,11 +118,11 @@ public sealed partial class NewOcrPage : Page
     {
         _sourcePath = path;
         SourceTextBox.Text = path;
-        StartButton.IsEnabled = _hasReadyModel;
+        UpdateStartAvailability();
         OutputMetaTextBlock.Text = Path.GetFileName(path);
         if (!_hasReadyModel)
         {
-            StatusTextBlock.Text = "Open Models and finish setup before running OCR";
+            StatusTextBlock.Text = _isAutoDownloading ? "Downloading recommended model" : "Preparing recommended model";
         }
     }
 
@@ -124,11 +134,13 @@ public sealed partial class NewOcrPage : Page
         }
 
         _cts = new CancellationTokenSource();
+        UpdateStartAvailability();
         StartButton.IsEnabled = false;
         CancelButton.IsEnabled = true;
         OpenOutputButton.IsEnabled = false;
         OutputTextBox.Text = string.Empty;
         ProgressBar.Value = 0;
+        ProgressBar.IsIndeterminate = false;
         StatusTextBlock.Text = "Starting OCR";
         _outputPath = null;
 
@@ -170,6 +182,11 @@ public sealed partial class NewOcrPage : Page
             OpenOutputButton.IsEnabled = !string.IsNullOrWhiteSpace(_outputPath) && File.Exists(_outputPath);
             StatusTextBlock.Text = result.Status == OcrJobStatus.Done ? "OCR complete" : result.Status.ToString();
             ProgressBar.Value = 100;
+
+            if (App.CurrentWindow is MainWindow window)
+            {
+                await window.RefreshSidebarHistoryAsync(result.JobId);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -186,7 +203,7 @@ public sealed partial class NewOcrPage : Page
             _cts?.Dispose();
             _cts = null;
             CancelButton.IsEnabled = false;
-            StartButton.IsEnabled = _sourcePath is not null && _hasReadyModel;
+            UpdateStartAvailability();
         }
     }
 
@@ -198,6 +215,7 @@ public sealed partial class NewOcrPage : Page
     private void UpdateProgress(OcrJobProgress progress)
     {
         StatusTextBlock.Text = progress.Message;
+        ProgressBar.IsIndeterminate = false;
         ProgressBar.Value = Math.Clamp(progress.Percent, 0, 100);
         if (progress.PageNumber is not null && progress.TotalPages is not null)
         {
@@ -225,6 +243,192 @@ public sealed partial class NewOcrPage : Page
         {
             Process.Start(new ProcessStartInfo { FileName = _outputPath, UseShellExecute = true });
         }
+    }
+
+    public async Task ResetForNewRunAsync()
+    {
+        await EnsureInitializedAsync();
+
+        _sourcePath = null;
+        _outputPath = null;
+        SourceTextBox.Text = string.Empty;
+        OutputTextBox.Text = string.Empty;
+        OutputMetaTextBlock.Text = _hasReadyModel
+            ? "Choose a file to begin."
+            : "VisiTexta is preparing the recommended model for first-time setup.";
+        StatusTextBlock.Text = _hasReadyModel
+            ? "Ready"
+            : _isAutoDownloading
+                ? "Downloading recommended model"
+                : "Preparing recommended model";
+        ProgressBar.IsIndeterminate = _isAutoDownloading;
+        ProgressBar.Value = 0;
+        OpenOutputButton.IsEnabled = false;
+        CancelButton.IsEnabled = false;
+        UpdateStartAvailability();
+    }
+
+    public async Task OpenHistoryItemAsync(OcrHistoryItem item)
+    {
+        await EnsureInitializedAsync();
+
+        _sourcePath = item.SourcePath;
+        _outputPath = item.OutputPath;
+        SourceTextBox.Text = item.SourcePath;
+        PromptTextBox.Text = item.RetryOptions.PromptOverride ?? string.Empty;
+        StudyBoostCheckBox.IsChecked = item.RetryOptions.StudyBoost;
+        DpiNumberBox.Value = item.RetryOptions.Dpi;
+        MaxDimensionNumberBox.Value = item.RetryOptions.MaxOcrDimension;
+        ExtractTemplateComboBox.SelectedItem = item.RetryOptions.ExtractTemplateId;
+
+        if (WorkflowComboBox.ItemsSource is System.Collections.IEnumerable workflowItems)
+        {
+            WorkflowComboBox.SelectedItem = workflowItems
+                .OfType<DisplayOption<OcrWorkflowMode>>()
+                .FirstOrDefault(option => option.Value == item.WorkflowMode);
+        }
+
+        if (RuntimeComboBox.ItemsSource is System.Collections.IEnumerable runtimeItems)
+        {
+            RuntimeComboBox.SelectedItem = runtimeItems
+                .OfType<DisplayOption<RuntimeProfile>>()
+                .FirstOrDefault(option => option.Value == item.RuntimeProfile);
+        }
+
+        if (ModelComboBox.ItemsSource is System.Collections.IEnumerable modelItems)
+        {
+            ModelComboBox.SelectedItem = modelItems
+                .OfType<LocalOcrModelInfo>()
+                .FirstOrDefault(model =>
+                    (!string.IsNullOrWhiteSpace(item.ModelFile) && model.FileName.Equals(item.ModelFile, StringComparison.OrdinalIgnoreCase))
+                    || (!string.IsNullOrWhiteSpace(item.ModelProfileId) && string.Equals(model.ProfileId, item.ModelProfileId, StringComparison.OrdinalIgnoreCase)))
+                ?? ModelComboBox.SelectedItem;
+        }
+
+        OutputTextBox.Text = item.OutputPath is { Length: > 0 } path && File.Exists(path)
+            ? await File.ReadAllTextAsync(path)
+            : item.Error ?? string.Empty;
+        OutputMetaTextBlock.Text = $"{item.UpdatedAt:g} • {item.WorkflowMode} • {item.Status}";
+        StatusTextBlock.Text = item.Status == OcrJobStatus.Done ? "Viewing transcript" : item.Status.ToString();
+        ProgressBar.IsIndeterminate = false;
+        ProgressBar.Value = item.Status == OcrJobStatus.Done ? 100 : 0;
+        OpenOutputButton.IsEnabled = !string.IsNullOrWhiteSpace(item.OutputPath) && File.Exists(item.OutputPath);
+        UpdateModeControls();
+        UpdateStartAvailability();
+    }
+
+    private async Task EnsureInitializedAsync()
+    {
+        await _initializationCompletion.Task;
+    }
+
+    private async Task RefreshModelChoicesAsync()
+    {
+        var catalog = await AppServices.ModelRegistry.GetCatalogAsync();
+        var readyModels = catalog.LocalModels.Where(model => model.RuntimeReady).ToList();
+        var models = readyModels.Count > 0
+            ? readyModels
+            : catalog.LocalModels.Count > 0
+                ? catalog.LocalModels
+                : catalog.Profiles.Select(profile => new LocalOcrModelInfo
+                {
+                    Label = profile.Label,
+                    ProfileId = profile.Id,
+                    FileName = profile.DefaultFile,
+                    Family = profile.Family,
+                    Recommended = profile.Recommended,
+                    Tested = profile.Tested,
+                    RequiresMmproj = profile.RequiresMmproj,
+                    RuntimeReady = false,
+                    SupportTier = profile.Recommended ? ModelSupportTier.Recommended : ModelSupportTier.Tested,
+                    Source = ModelInstallSource.Registry
+                }).ToList();
+
+        _recommendedProfileId = catalog.Profiles.FirstOrDefault(profile => profile.Recommended)?.Id;
+        _recommendedModelLabel = catalog.Profiles.FirstOrDefault(profile => profile.Recommended)?.Label;
+        _hasReadyModel = readyModels.Count > 0;
+
+        var selectedFileName = (ModelComboBox.SelectedItem as LocalOcrModelInfo)?.FileName;
+        ModelComboBox.ItemsSource = models;
+        ModelComboBox.SelectedItem = models.FirstOrDefault(model => string.Equals(model.FileName, selectedFileName, StringComparison.OrdinalIgnoreCase));
+        if (ModelComboBox.SelectedItem is null)
+        {
+            ModelComboBox.SelectedIndex = models.Count > 0 ? 0 : -1;
+        }
+    }
+
+    private async Task EnsureRecommendedModelReadyAsync()
+    {
+        if (_isAutoDownloading || _hasReadyModel || string.IsNullOrWhiteSpace(_recommendedProfileId))
+        {
+            return;
+        }
+
+        _isAutoDownloading = true;
+        UpdateStartAvailability();
+        ProgressBar.IsIndeterminate = true;
+        ProgressBar.Value = 0;
+        StatusTextBlock.Text = "Downloading recommended model";
+        OutputMetaTextBlock.Text = $"{_recommendedModelLabel ?? "Recommended OCR model"} is downloading for first-time setup.";
+
+        try
+        {
+            await AppServices.ModelDownloads.DownloadAsync(_recommendedProfileId, new Progress<ModelDownloadProgress>(progress =>
+            {
+                StatusTextBlock.Text = BuildDownloadStatus(progress);
+                if (progress.Percent is not null)
+                {
+                    ProgressBar.IsIndeterminate = false;
+                    ProgressBar.Value = progress.Percent.Value;
+                }
+            }));
+
+            await RefreshModelChoicesAsync();
+            StatusTextBlock.Text = "Recommended model ready";
+            OutputMetaTextBlock.Text = _sourcePath is null ? "Choose a file to begin." : Path.GetFileName(_sourcePath);
+        }
+        catch (Exception ex)
+        {
+            AppServices.Diagnostics.RecordError(ex.Message);
+            ProgressBar.IsIndeterminate = false;
+            ProgressBar.Value = 0;
+            StatusTextBlock.Text = "Model download failed";
+            OutputMetaTextBlock.Text = "Open Models from the sidebar to retry the recommended setup.";
+        }
+        finally
+        {
+            _isAutoDownloading = false;
+            UpdateStartAvailability();
+        }
+    }
+
+    private void UpdateStartAvailability()
+    {
+        StartButton.IsEnabled = _sourcePath is not null && _hasReadyModel && !_isAutoDownloading && _cts is null;
+    }
+
+    private static string BuildDownloadStatus(ModelDownloadProgress progress)
+    {
+        if (progress.TotalBytes is null)
+        {
+            return progress.Message;
+        }
+
+        return $"{progress.Message} - {FormatBytes(progress.DownloadedBytes)} / {FormatBytes(progress.TotalBytes.Value)}";
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB"];
+        var value = (double)bytes;
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+
+        return unit == 0 ? $"{bytes} {units[unit]}" : $"{value:0.0} {units[unit]}";
     }
 
     private static int SafeNumber(double value, int fallback)

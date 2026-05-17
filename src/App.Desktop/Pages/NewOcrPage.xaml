@@ -13,8 +13,8 @@
         </Grid.RowDefinitions>
 
         <StackPanel Spacing="4">
-            <TextBlock Text="New OCR" Style="{StaticResource SectionTitleTextBlockStyle}" />
-            <TextBlock Text="Drop or choose an image/PDF and process it locally with the selected OCR model/runtime." Style="{StaticResource MutedTextBlockStyle}" />
+            <TextBlock Text="OCR workspace" Style="{StaticResource SectionTitleTextBlockStyle}" />
+            <TextBlock Text="Run OCR on the right while recent transcripts stay in the left sidebar for quick reopening." Style="{StaticResource MutedTextBlockStyle}" />
         </StackPanel>
 
         <Grid Grid.Row="1" ColumnSpacing="16">
@@ -34,8 +34,13 @@
                         Style="{StaticResource CardBorderStyle}">
                         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10">
                             <FontIcon Glyph="&#xE898;" FontSize="34" />
-                            <TextBlock Text="Drop PNG, JPG, JPEG, or PDF here" FontSize="17" FontWeight="SemiBold" />
-                            <Button Content="Browse file" Click="BrowseFile_Click" HorizontalAlignment="Center" />
+                            <TextBlock Text="Run OCR" FontSize="17" FontWeight="SemiBold" />
+                            <TextBlock Text="Drop PNG, JPG, JPEG, or PDF here, or browse for a file to start a new transcript." TextAlignment="Center" Style="{StaticResource MutedTextBlockStyle}" />
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="8">
+                                <Button Content="Browse file" Click="BrowseFile_Click" HorizontalAlignment="Center" />
+                                <Button x:Name="StartButton" Content="Run OCR" Click="Start_Click" IsEnabled="False" />
+                                <Button x:Name="CancelButton" Content="Cancel" Click="Cancel_Click" IsEnabled="False" />
+                            </StackPanel>
                         </StackPanel>
                     </Border>
 
@@ -65,12 +70,6 @@
                             <CheckBox x:Name="StudyBoostCheckBox" Content="Study Boost for Notes mode" />
                         </StackPanel>
                     </Border>
-
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button x:Name="StartButton" Content="Run OCR" Click="Start_Click" IsEnabled="False" />
-                        <Button x:Name="CancelButton" Content="Cancel" Click="Cancel_Click" IsEnabled="False" />
-                        <Button Content="Copy" Click="Copy_Click" />
-                    </StackPanel>
                 </StackPanel>
             </ScrollViewer>
 
@@ -89,7 +88,10 @@
                             <TextBlock Text="OCR Output" FontSize="18" FontWeight="SemiBold" />
                             <TextBlock x:Name="OutputMetaTextBlock" Text="Markdown will stream here." Style="{StaticResource MutedTextBlockStyle}" />
                         </StackPanel>
-                        <Button x:Name="OpenOutputButton" Grid.Column="1" Content="Open Result" Click="OpenOutput_Click" IsEnabled="False" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="OpenOutputButton" Content="Open Result" Click="OpenOutput_Click" IsEnabled="False" />
+                            <Button Content="Copy" Click="Copy_Click" />
+                        </StackPanel>
                     </Grid>
 
                     <TextBox
