@@ -19,13 +19,13 @@
             </Style>
 
             <Style x:Key="MutedTextBlockStyle" TargetType="TextBlock">
-                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
                 <Setter Property="TextWrapping" Value="WrapWholeWords" />
+                <Setter Property="Opacity" Value="0.72" />
             </Style>
 
             <Style x:Key="CardBorderStyle" TargetType="Border">
-                <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderBrush" Value="#33000000" />
                 <Setter Property="BorderThickness" Value="1" />
                 <Setter Property="CornerRadius" Value="{StaticResource PanelCornerRadius}" />
                 <Setter Property="Padding" Value="{StaticResource PanelPadding}" />
