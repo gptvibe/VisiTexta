@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useMemo, useState } from 'react'
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { open, save } from '@tauri-apps/plugin-dialog'
@@ -667,6 +667,7 @@ function App() {
   const [setupWizardOpen, setSetupWizardOpen] = useState(false)
   const [cancelingJobs, setCancelingJobs] = useState<Record<string, boolean>>({})
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() => readSystemTheme())
+  const autoDownloadTargetRef = useRef<string | null>(null)
   const effectiveSettings = settings ?? appDefaults?.settings ?? null
   const drawerSettings = effectiveSettings ?? appDefaults?.settings ?? null
   const selectedWorkflowMode =
@@ -857,6 +858,11 @@ function App() {
   const estimatedDiskUse =
     formatBytes(recommendedSetupInfo?.estimated_download_bytes) ||
     'Checking size estimate...'
+  const recommendedSetupTarget =
+    recommendedSetupInfo?.profile_id ||
+    onboardingInfo?.recommended_model_profile_id ||
+    appDefaults?.recommended_model_profile_id ||
+    null
   const setupStatusLabel = runtimeSetupIssue
     ? 'Runtime required'
     : downloadState.status === 'error'
@@ -960,6 +966,10 @@ function App() {
 
   const handlePastedImageEvent = useEffectEvent((blob: Blob) => {
     void handlePastedImage(blob)
+  })
+
+  const startRecommendedSetupEvent = useEffectEvent(() => {
+    void startRecommendedSetup()
   })
 
   useEffect(() => {
@@ -1073,6 +1083,29 @@ function App() {
       .then((info) => setRecommendedSetupInfo(info))
       .catch(() => setRecommendedSetupInfo(null))
   }, [])
+
+  useEffect(() => {
+    if (!modelMissing) {
+      autoDownloadTargetRef.current = null
+    }
+  }, [modelMissing])
+
+  useEffect(() => {
+    if (!effectiveSettings || !modelMissing || runtimeSetupIssue) return
+    if (!recommendedSetupTarget || downloadState.status === 'error') return
+    if (isDownloadActive(downloadState.status)) return
+    if (autoDownloadTargetRef.current === recommendedSetupTarget) return
+
+    autoDownloadTargetRef.current = recommendedSetupTarget
+    setLog('No local OCR model was found. Downloading the recommended model now.')
+    startRecommendedSetupEvent()
+  }, [
+    downloadState.status,
+    effectiveSettings,
+    modelMissing,
+    recommendedSetupTarget,
+    runtimeSetupIssue,
+  ])
 
   useEffect(() => {
     if (settingsOpen) {
@@ -1824,7 +1857,9 @@ function App() {
     }
 
     setDownloadState({ status: 'starting', progress: 0 })
-    setSetupWizardOpen(true)
+    if (!isAuto) {
+      setSetupWizardOpen(true)
+    }
 
     try {
       const result = await invoke<{ file_name: string; profile_id?: string | null }>(

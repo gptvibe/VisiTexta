@@ -144,6 +144,83 @@ export function ImportPanel({
         {modeDefinition.helper} Choose a preset, then add a file to begin.
       </div>
 
+      <section className="import-section quickstart-section" aria-label="Run OCR">
+        <div className="import-section-header">
+          <div className="section-title">Run OCR</div>
+          <div className="import-section-copy">
+            Start here. Add a file first, then fine-tune workflow and preset details below when
+            you need them.
+          </div>
+        </div>
+        <div className="signal-grid quickstart-signals">
+          <div className="signal-card">
+            <span>Workflow</span>
+            <strong>{modeDefinition.label}</strong>
+            <span>{presetSummary}</span>
+          </div>
+          <div className="signal-card">
+            <span>Model</span>
+            <strong>{activeModelTitle}</strong>
+            <span>
+              {modelMissing ? 'Recommended setup will finish before extraction starts.' : activeModelSupportLabel}
+            </span>
+          </div>
+          <div className="signal-card">
+            <span>Runtime</span>
+            <strong>{runtimeLabel}</strong>
+            <span>{effectiveRuntimeLabel}</span>
+          </div>
+        </div>
+
+        {showSetupCard && (
+          <section className="setup-card" aria-live="polite">
+            <div className="setup-card-header">
+              <div>
+                <div className="section-title">Setup status</div>
+                <div className="setup-card-title">{setupCardTitle}</div>
+              </div>
+              <div className="setup-card-badge">
+                {runtimeSetupIssue
+                  ? 'Runtime'
+                  : downloadState.status === 'error'
+                    ? 'Paused'
+                    : `${downloadProgressPercent}%`}
+              </div>
+            </div>
+            <div className="setup-card-copy">{setupCardBody}</div>
+            {!runtimeSetupIssue && downloadState.status !== 'error' && (
+              <div className="model-progress">
+                <div className="model-progress-bar">
+                  <div
+                    className="model-progress-fill"
+                    style={{ width: `${downloadProgressPercent}%` }}
+                  />
+                </div>
+                <div className="model-progress-text">
+                  {downloadState.status === 'verifying'
+                    ? downloadState.message || 'Verifying download...'
+                    : downloadState.total_bytes
+                      ? `${downloadProgressPercent}% (${formatBytes(downloadState.downloaded_bytes)} / ${formatBytes(downloadState.total_bytes)})`
+                      : `${downloadProgressPercent}%`}
+                </div>
+              </div>
+            )}
+            <div className="advanced-actions">
+              <button className="btn primary" type="button" onClick={onOpenSetupWizard}>
+                Open setup
+              </button>
+            </div>
+          </section>
+        )}
+
+        <DropZone
+          disabled={busy || modelMissing}
+          onBrowse={onBrowseFiles}
+          onPasteImage={onPasteImage}
+          onFiles={onFiles}
+        />
+      </section>
+
       <section className="import-section workflow-section" aria-label="Workflow modes">
         <div className="import-section-header">
           <div className="section-title">Workflow modes</div>
@@ -178,47 +255,6 @@ export function ImportPanel({
           })}
         </div>
       </section>
-
-      {showSetupCard && (
-        <section className="setup-card" aria-live="polite">
-          <div className="setup-card-header">
-            <div>
-              <div className="section-title">Setup status</div>
-              <div className="setup-card-title">{setupCardTitle}</div>
-            </div>
-            <div className="setup-card-badge">
-              {runtimeSetupIssue
-                ? 'Runtime'
-                : downloadState.status === 'error'
-                  ? 'Paused'
-                  : `${downloadProgressPercent}%`}
-            </div>
-          </div>
-          <div className="setup-card-copy">{setupCardBody}</div>
-          {!runtimeSetupIssue && downloadState.status !== 'error' && (
-            <div className="model-progress">
-              <div className="model-progress-bar">
-                <div
-                  className="model-progress-fill"
-                  style={{ width: `${downloadProgressPercent}%` }}
-                />
-              </div>
-              <div className="model-progress-text">
-                {downloadState.status === 'verifying'
-                  ? downloadState.message || 'Verifying download...'
-                  : downloadState.total_bytes
-                    ? `${downloadProgressPercent}% (${formatBytes(downloadState.downloaded_bytes)} / ${formatBytes(downloadState.total_bytes)})`
-                    : `${downloadProgressPercent}%`}
-              </div>
-            </div>
-          )}
-          <div className="advanced-actions">
-            <button className="btn primary" type="button" onClick={onOpenSetupWizard}>
-              Open setup
-            </button>
-          </div>
-        </section>
-      )}
 
       <section className="import-section speed-section" aria-label="Extraction presets">
         <div className="import-section-header">
@@ -258,13 +294,6 @@ export function ImportPanel({
           <div className="preset-tradeoff-note">{presetTradeoff}</div>
         )}
       </section>
-
-      <DropZone
-        disabled={busy || modelMissing}
-        onBrowse={onBrowseFiles}
-        onPasteImage={onPasteImage}
-        onFiles={onFiles}
-      />
 
       <div className="advanced-toggle">
         <button

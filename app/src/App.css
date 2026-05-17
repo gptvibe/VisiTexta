@@ -88,6 +88,8 @@
 }
 
 .queue-panel {
+  display: flex;
+  flex-direction: column;
   padding: 10px;
   background: color-mix(in srgb, var(--surface) 88%, var(--canvas-muted));
   border-color: color-mix(in srgb, var(--border-strong) 72%, var(--border));
@@ -176,8 +178,8 @@
   display: flex;
   flex-direction: column;
   gap: 0;
+  flex: 1;
   min-height: 0;
-  max-height: 72vh;
   overflow: auto;
   padding-right: 2px;
   border: 1px solid var(--border);
@@ -495,6 +497,23 @@
   gap: 14px;
   container-type: inline-size;
   container-name: import-panel;
+}
+
+.quickstart-section {
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--accent-soft) 42%, transparent), transparent 48%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent-soft) 18%, var(--surface)) 0%,
+      var(--surface) 100%
+    );
+  border-color: color-mix(in srgb, var(--accent) 16%, var(--border));
+}
+
+.quickstart-signals {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .command-copy,
@@ -1707,6 +1726,7 @@
 }
 
 @container import-panel (min-width: 680px) {
+  .quickstart-signals,
   .workflow-grid,
   .speed-grid,
   .template-grid,
@@ -1716,6 +1736,10 @@
 }
 
 @container import-panel (min-width: 980px) {
+  .quickstart-signals {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .workflow-grid,
   .template-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1755,6 +1779,7 @@
 }
 
 @media (max-width: 760px) {
+  .quickstart-signals,
   .dropzone-actions,
   .model-row,
   .drawer-footer,

@@ -81,7 +81,7 @@ export function FileQueue({
     <div className="queue">
       <div className="queue-header">
         <div className="queue-header-copy">
-          <div className="panel-title queue-title">Recent jobs</div>
+          <div className="panel-title queue-title">Recent transcripts</div>
           <div className="queue-counts">
             <span className="queue-count-pill">{formatCount(activeCount, 'active')}</span>
             <span className="queue-count-pill">{formatCount(finishedCount, 'finished')}</span>
@@ -127,8 +127,8 @@ export function FileQueue({
       <div className="queue-list">
         {jobs.length === 0 && (
           <div className="queue-empty">
-            No recent jobs yet. Start from the workspace to review pages, OCR output, and exports
-            here.
+            No transcripts yet. Start OCR from the main workspace and each run will stay here for
+            quick revisit.
           </div>
         )}
         {jobs.length > 0 && visibleJobs.length === 0 && (

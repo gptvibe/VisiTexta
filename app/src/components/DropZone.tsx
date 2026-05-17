@@ -34,10 +34,11 @@ export function DropZone({ disabled, onBrowse, onPasteImage, onFiles }: DropZone
       }}
       >
       <div className="dropzone-inner">
-        <div className="dropzone-eyebrow">Supported inputs: PNG, JPG, JPEG, PDF</div>
-        <div className="dropzone-title">Add documents</div>
+        <div className="dropzone-eyebrow">Run OCR locally • PNG, JPG, JPEG, PDF</div>
+        <div className="dropzone-title">Run OCR on a document</div>
         <div className="dropzone-subtitle">
-          Process scans, screenshots, and PDFs locally. Browse for files or paste an image from the clipboard.
+          Process scans, screenshots, and PDFs locally. Choose files now or paste an image from
+          the clipboard to start a new transcript.
         </div>
         <div className="dropzone-actions">
           <button className="btn primary" type="button" onClick={onBrowse} disabled={disabled}>

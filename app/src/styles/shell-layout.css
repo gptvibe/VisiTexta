@@ -24,6 +24,7 @@
 .app-warning-slot,
 .app-footer-slot,
 .workspace-rail,
+.workspace-main,
 .workspace-task,
 .workspace-preview {
   min-width: 0;
@@ -188,16 +189,28 @@
 
 .workspace {
   display: grid;
-  grid-template-columns: 308px minmax(390px, 430px) minmax(0, 1fr);
+  grid-template-columns: 320px minmax(0, 1fr);
   gap: 10px;
   align-items: stretch;
+  min-height: 0;
 }
 
 .workspace-rail,
+.workspace-main,
 .workspace-task,
 .workspace-preview {
   display: flex;
   min-height: 0;
+}
+
+.workspace-main {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+}
+
+.workspace-rail {
+  align-self: stretch;
 }
 
 .panel {
@@ -247,7 +260,7 @@
 
 @media (max-width: 1400px) {
   .workspace {
-    grid-template-columns: 280px minmax(340px, 400px) minmax(0, 1fr);
+    grid-template-columns: 280px minmax(0, 1fr);
   }
 }
 

@@ -30,8 +30,10 @@ export function AppShell({
         {warning ? <div className="app-warning-slot">{warning}</div> : null}
         <main className="workspace">
           <aside className="workspace-rail">{queue}</aside>
-          <section className="workspace-task">{importPanel}</section>
-          <section className="workspace-preview">{preview}</section>
+          <section className="workspace-main">
+            <div className="workspace-task">{importPanel}</div>
+            <div className="workspace-preview">{preview}</div>
+          </section>
         </main>
         <div className="app-footer-slot">{footer}</div>
       </div>
