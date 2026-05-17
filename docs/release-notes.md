@@ -1,5 +1,15 @@
 # Release Notes
 
+## 2.0.2
+
+VisiTexta 2.0.2 finishes the desktop release path with deterministic release QA on the release workstation.
+
+Highlights:
+
+- Release QA now captures benchmark command output robustly and stops stale OCR worker processes before build and gate steps, avoiding Windows file-lock failures during validation.
+- Cold and warm OCR regression baselines are documented and maintained as release-workstation envelope baselines, so the gate stays meaningful without flapping on ordinary local variance.
+- Packaging and publishing metadata are updated for the 2.0.2 release.
+
 ## 2.0.1
 
 VisiTexta 2.0.1 is a focused patch release for the Tauri desktop app.

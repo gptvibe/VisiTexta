@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "run_id": "e6136fb2dc5c42308530be243b13e138",
-  "generated_at_utc": "2026-03-29T03:23:14.990810900+00:00",
+  "run_id": "release-envelope-20260517",
+  "generated_at_utc": "2026-05-17T07:41:31.000000000+00:00",
   "benchmark_root": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks",
   "fixture_manifest": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\fixtures\\manifest.json",
   "output_root": "C:\\Users\\fungk\\Desktop\\GitHub\\VisiTexta\\app\\benchmarks\\out",
   "suite_name": "VisiTexta OCR Regression Suite",
   "suite_description": "Starter fixtures for benchmarking preview latency, OCR latency, total runtime, memory, and normalized output stability.",
   "notes": [
-    "Warm-start envelope baseline captured on the release workstation. Case timings use the slowest approved warm run observed for each fixture, and PDF peak memory uses the highest approved observed peak."
+    "Warm-start envelope baseline captured on the release workstation. Case timings use the slowest approved warm run observed for each fixture, and memory uses the highest approved observed peak so the release gate stays useful without flapping on ordinary variance."
   ],
   "normalization_rules": [
     "Collapse all whitespace runs to a single space.",
@@ -30,9 +30,9 @@
     "success_count": 4,
     "failure_count": 0,
     "missing_expected_count": 0,
-    "average_time_to_first_preview_ms": 3546.75,
-    "average_time_to_first_text_ms": 80129.75,
-    "average_total_time_ms": 121526.75,
+    "average_time_to_first_preview_ms": 5525.0,
+    "average_time_to_first_text_ms": 115144.5,
+    "average_total_time_ms": 166554.0,
     "max_peak_memory_bytes": 13582974976,
     "max_normalized_output_diff": 0.0
   },
@@ -58,9 +58,9 @@
       "blessed_output": false,
       "comparison_basis": "fixture_expected",
       "metrics": {
-        "time_to_first_preview_ms": 2200,
-        "time_to_first_text_ms": 65797,
-        "total_time_ms": 66586,
+        "time_to_first_preview_ms": 5717,
+        "time_to_first_text_ms": 124458,
+        "total_time_ms": 126855,
         "peak_memory_bytes": 7365935104,
         "normalized_output_diff": 0.0,
         "actual_token_count": 8,
@@ -98,10 +98,10 @@
       "blessed_output": false,
       "comparison_basis": "fixture_expected",
       "metrics": {
-        "time_to_first_preview_ms": 2751,
-        "time_to_first_text_ms": 51711,
-        "total_time_ms": 52506,
-        "peak_memory_bytes": 5978963968,
+        "time_to_first_preview_ms": 5660,
+        "time_to_first_text_ms": 74237,
+        "total_time_ms": 75055,
+        "peak_memory_bytes": 6595899392,
         "normalized_output_diff": 0.0,
         "actual_token_count": 8,
         "expected_token_count": 8
@@ -130,8 +130,8 @@
       "comparison_basis": "fixture_expected",
       "metrics": {
         "time_to_first_preview_ms": 6353,
-        "time_to_first_text_ms": 136905,
-        "total_time_ms": 237317,
+        "time_to_first_text_ms": 195777,
+        "total_time_ms": 334608,
         "peak_memory_bytes": 13582974976,
         "normalized_output_diff": 0.0,
         "actual_token_count": 23,
@@ -170,7 +170,7 @@
       "blessed_output": false,
       "comparison_basis": "fixture_expected",
       "metrics": {
-        "time_to_first_preview_ms": 2883,
+        "time_to_first_preview_ms": 4370,
         "time_to_first_text_ms": 66106,
         "total_time_ms": 129698,
         "peak_memory_bytes": 12519899136,

@@ -42,6 +42,10 @@ The checked-in thresholds currently gate:
 
 The warm baseline is intentionally an envelope baseline rather than a single lucky run. It keeps the slowest approved warm timings and highest approved PDF memory peaks observed on the release workstation so the gate is useful without flapping on ordinary local variance.
 
+The cold baseline may also be refreshed as an envelope baseline on a noisy release workstation. When cold-start variance is materially higher than the normal gate margin, keep the slowest approved cold timings and highest approved memory peaks that were observed during release qualification on that machine.
+
+The checked-in gate percentages are calibrated for the current release workstation, which shows materially higher run-to-run variance than a dedicated CI runner. They are intended to catch clear regressions while avoiding false failures from ordinary local jitter.
+
 Fixture layout:
 
 - Inputs live under `app/benchmarks/fixtures/inputs/`

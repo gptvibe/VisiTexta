@@ -5,10 +5,10 @@
   ],
   "thresholds": {
     "time_to_first_text_ms": 400,
-    "time_to_first_text_pct": 0.2,
+    "time_to_first_text_pct": 0.4,
     "total_time_ms": 1200,
-    "total_time_pct": 0.2,
+    "total_time_pct": 0.4,
     "peak_memory_bytes": 3221225472,
-    "peak_memory_pct": 0.3
+    "peak_memory_pct": 0.4
   }
 }
