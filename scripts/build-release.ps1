@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "3.0.0",
+    [string]$Version = "3.0.1",
     [string]$SignToolPath = $env:VISITEXTA_SIGNTOOL,
     [string]$CertificatePath = $env:VISITEXTA_CERT_PATH,
     [string]$CertificatePassword = $env:VISITEXTA_CERT_PASSWORD,
@@ -35,6 +35,27 @@ function Copy-AssetFolder([string]$Name) {
     $destination = Join-Path $stageDir $Name
     Remove-DirectoryIfExists $destination
     Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force
+}
+
+function Copy-XamlBuildArtifacts([string]$DestinationRoot) {
+    $desktopBuildRoot = Join-Path $repoRoot "src\App.Desktop\bin\Release"
+    $priFile = Get-ChildItem -LiteralPath $desktopBuildRoot -Recurse -Filter "VisiTexta.pri" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+
+    if ($null -eq $priFile) {
+        throw "WinUI resource file VisiTexta.pri was not found in the Release build output. The portable app would crash without it."
+    }
+
+    $xamlRoot = Split-Path -Parent $priFile.FullName
+    $xamlFiles = Get-ChildItem -LiteralPath $xamlRoot -Recurse -Include *.xbf,*.pri -File
+    foreach ($file in $xamlFiles) {
+        $relative = [System.IO.Path]::GetRelativePath($xamlRoot, $file.FullName)
+        $destination = Join-Path $DestinationRoot $relative
+        $destinationDirectory = Split-Path -Parent $destination
+        New-Item -ItemType Directory -Force -Path $destinationDirectory | Out-Null
+        Copy-Item -LiteralPath $file.FullName -Destination $destination -Force
+    }
 }
 
 function Resolve-SignToolPath {
@@ -113,6 +134,7 @@ dotnet publish (Join-Path $repoRoot "workers\ocr-worker\OcrWorker.csproj") `
     -o $workerPublishDir
 
 Copy-Item -LiteralPath $publishDir -Destination $stageDir -Recurse
+Copy-XamlBuildArtifacts $stageDir
 
 $workerStageDir = Join-Path $stageDir "workers\ocr-worker"
 Remove-DirectoryIfExists $workerStageDir
