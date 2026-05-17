@@ -106,7 +106,7 @@ export function MarkdownPreview({
   }, [stream])
 
   useEffect(() => {
-    setActiveTab(isStreaming ? 'original' : 'result')
+     setActiveTab(isStreaming ? 'ocr' : 'result')
     setSelectedPageNumber(null)
   }, [isStreaming, job?.job_id])
 

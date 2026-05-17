@@ -47,7 +47,7 @@ This repo currently targets Windows behavior explicitly.
 
 ## Quick start (for normal users)
 
-1. Download release `2.0.0`.
+1. Download the latest release.
 2. Choose one package style:
 3. For portable use, unzip the app and run `VisiTexta.exe`.
 4. For installer use, run the Windows installer and launch VisiTexta from the installed app.
@@ -106,7 +106,7 @@ In short: initial delay is expected, then text should start flowing.
 ## Portable package layout
 
 ```text
-VisiTexta 2.0.0/
+VisiTexta/
   VisiTexta.exe
   bin/
     accelerated/

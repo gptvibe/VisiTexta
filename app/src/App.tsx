@@ -1428,6 +1428,7 @@ function App() {
     }
 
     setBusy(true)
+    setSelectedId(null)
     setLog(
       paths.length === 1
         ? `Starting ${selectedModeDefinition.label.toLowerCase()}...`
@@ -1477,7 +1478,8 @@ function App() {
       return
     }
 
-    setBusy(true)
+  setBusy(true)
+  setSelectedId(null)
     setLog(`Starting ${selectedModeDefinition.label.toLowerCase()} from the pasted image...`)
 
     try {
