@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/App.Core/App.Core.csproj" />
+    <Project Path="src/App.Desktop/App.Desktop.csproj" />
+    <Project Path="src/App.Inference/App.Inference.csproj" />
+    <Project Path="src/App.Models/App.Models.csproj" />
+    <Project Path="src/App.Services/App.Services.csproj" />
+    <Project Path="src/App.Tests/App.Tests.csproj" />
+  </Folder>
+  <Folder Name="/workers/">
+    <Project Path="workers/ocr-worker/OcrWorker.csproj" />
+  </Folder>
+</Solution>

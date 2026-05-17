@@ -147,6 +147,22 @@ VisiTexta 2.0.0/
 
 ## For developers
 
+Native WinUI rebuild:
+
+```powershell
+dotnet build VisiTexta.slnx
+dotnet test VisiTexta.slnx --no-build
+dotnet run --project src/App.Desktop/App.Desktop.csproj -p:RuntimeIdentifier=win-x64
+```
+
+Build native portable release:
+
+```powershell
+.\scripts\build-release.ps1
+```
+
+The existing Tauri app remains available during migration:
+
 From repo root:
 
 ```bash

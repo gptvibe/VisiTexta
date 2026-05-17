@@ -2,3 +2,7 @@ release/
 artifacts/
 tmp/
 app/benchmarks/out/
+src/**/bin/
+src/**/obj/
+workers/**/bin/
+workers/**/obj/

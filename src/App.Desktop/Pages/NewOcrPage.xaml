@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="App_Desktop.Pages.NewOcrPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid Padding="28" RowSpacing="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Spacing="4">
+            <TextBlock Text="New OCR" Style="{StaticResource SectionTitleTextBlockStyle}" />
+            <TextBlock Text="Drop or choose an image/PDF and process it locally with the selected OCR model/runtime." Style="{StaticResource MutedTextBlockStyle}" />
+        </StackPanel>
+
+        <Grid Grid.Row="1" ColumnSpacing="16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="410" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <ScrollViewer>
+                <StackPanel Spacing="14">
+                    <Border
+                        x:Name="DropZone"
+                        AllowDrop="True"
+                        DragOver="DropZone_DragOver"
+                        Drop="DropZone_Drop"
+                        MinHeight="180"
+                        Style="{StaticResource CardBorderStyle}">
+                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10">
+                            <FontIcon Glyph="&#xE898;" FontSize="34" />
+                            <TextBlock Text="Drop PNG, JPG, JPEG, or PDF here" FontSize="17" FontWeight="SemiBold" />
+                            <Button Content="Browse file" Click="BrowseFile_Click" HorizontalAlignment="Center" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Source" FontWeight="SemiBold" />
+                            <TextBox x:Name="SourceTextBox" PlaceholderText="No file selected" IsReadOnly="True" />
+                            <ComboBox x:Name="WorkflowComboBox" Header="Mode" SelectionChanged="WorkflowComboBox_SelectionChanged" />
+                            <ComboBox x:Name="ExtractTemplateComboBox" Header="Extract preset" />
+                            <TextBox x:Name="PromptTextBox" Header="Optional override" PlaceholderText="Leave blank for the selected mode default." AcceptsReturn="True" TextWrapping="Wrap" MinHeight="72" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel Spacing="10">
+                            <TextBlock Text="Model and Runtime" FontWeight="SemiBold" />
+                            <ComboBox x:Name="ModelComboBox" Header="OCR model" DisplayMemberPath="Label" />
+                            <ComboBox x:Name="RuntimeComboBox" Header="Runtime profile" />
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <NumberBox x:Name="DpiNumberBox" Header="DPI" Value="300" Minimum="120" Maximum="600" SmallChange="20" />
+                                <NumberBox x:Name="MaxDimensionNumberBox" Grid.Column="1" Header="Max px" Value="1600" Minimum="800" Maximum="3200" SmallChange="100" Width="126" />
+                            </Grid>
+                            <CheckBox x:Name="StudyBoostCheckBox" Content="Study Boost for Notes mode" />
+                        </StackPanel>
+                    </Border>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="StartButton" Content="Run OCR" Click="Start_Click" IsEnabled="False" />
+                        <Button x:Name="CancelButton" Content="Cancel" Click="Cancel_Click" IsEnabled="False" />
+                        <Button Content="Copy" Click="Copy_Click" />
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+
+            <Border Grid.Column="1" Style="{StaticResource CardBorderStyle}">
+                <Grid RowSpacing="12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="OCR Output" FontSize="18" FontWeight="SemiBold" />
+                            <TextBlock x:Name="OutputMetaTextBlock" Text="Markdown will stream here." Style="{StaticResource MutedTextBlockStyle}" />
+                        </StackPanel>
+                        <Button x:Name="OpenOutputButton" Grid.Column="1" Content="Open Result" Click="OpenOutput_Click" IsEnabled="False" />
+                    </Grid>
+
+                    <TextBox
+                        x:Name="OutputTextBox"
+                        Grid.Row="1"
+                        AcceptsReturn="True"
+                        TextWrapping="Wrap"
+                        PlaceholderText="Local OCR output appears here."
+                        VerticalAlignment="Stretch"
+                        HorizontalAlignment="Stretch" />
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="2" Style="{StaticResource CardBorderStyle}" Padding="14">
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="240" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="StatusTextBlock" Text="Ready" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <ProgressBar x:Name="ProgressBar" Grid.Column="1" Minimum="0" Maximum="100" Value="0" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="2" Text="Local-first. No cloud OCR." Style="{StaticResource MutedTextBlockStyle}" VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+    </Grid>
+</Page>

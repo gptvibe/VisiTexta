@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="App_Desktop.Pages.DiagnosticsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid Padding="28" RowSpacing="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Spacing="4">
+            <TextBlock Text="Diagnostics" Style="{StaticResource SectionTitleTextBlockStyle}" />
+            <TextBlock Text="Runtime, PDFium, storage, model, and error details for support." Style="{StaticResource MutedTextBlockStyle}" />
+        </StackPanel>
+
+        <Border Grid.Row="1" Style="{StaticResource CardBorderStyle}">
+            <TextBox
+                x:Name="ReportTextBox"
+                AcceptsReturn="True"
+                IsReadOnly="True"
+                TextWrapping="NoWrap"
+                FontFamily="Consolas" />
+        </Border>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+            <Button Content="Refresh" Click="Refresh_Click" />
+            <Button Content="Copy Report" Click="Copy_Click" />
+            <Button Content="Open Logs Folder" Click="OpenLogs_Click" />
+        </StackPanel>
+    </Grid>
+</Page>
