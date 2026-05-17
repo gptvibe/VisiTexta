@@ -19,7 +19,7 @@ public sealed class ModelDownloadService : IModelDownloadService
         _paths = paths;
         _registry = registry;
         _httpClient = httpClient ?? new HttpClient();
-        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("VisiTexta-Native/3.0.4");
+        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("VisiTexta-Native/3.0.5");
     }
 
     public async Task<ModelDownloadResult> DownloadAsync(

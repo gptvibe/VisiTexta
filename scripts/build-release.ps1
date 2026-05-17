@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "3.0.4",
+    [string]$Version = "3.0.5",
     [string]$SignToolPath = $env:VISITEXTA_SIGNTOOL,
     [string]$CertificatePath = $env:VISITEXTA_CERT_PATH,
     [string]$CertificatePassword = $env:VISITEXTA_CERT_PASSWORD,
@@ -48,15 +48,35 @@ function Copy-XamlBuildArtifacts([string]$DestinationRoot) {
     }
 
     $xamlRoot = Split-Path -Parent $priFile.FullName
-    $xamlRootUri = [System.Uri]::new(([System.IO.Path]::GetFullPath($xamlRoot).TrimEnd('\\') + '\\'))
-    $xamlFiles = Get-ChildItem -LiteralPath $xamlRoot -Recurse -Include *.xbf,*.pri -File
+    $xamlRootFullPath = [System.IO.Path]::GetFullPath($xamlRoot).TrimEnd('\') + '\'
+    $xamlFiles = @(
+        Get-ChildItem -LiteralPath $xamlRoot -Recurse -Filter "*.xbf" -File
+        Get-ChildItem -LiteralPath $xamlRoot -Recurse -Filter "*.pri" -File
+    )
+    if ($xamlFiles.Count -eq 0) {
+        throw "No WinUI .xbf or .pri resources were found in the Release build output."
+    }
+
     foreach ($file in $xamlFiles) {
-        $fileUri = [System.Uri]::new([System.IO.Path]::GetFullPath($file.FullName))
-        $relative = [System.Uri]::UnescapeDataString($xamlRootUri.MakeRelativeUri($fileUri).ToString()).Replace('/', '\\')
+        $fileFullPath = [System.IO.Path]::GetFullPath($file.FullName)
+        $relative = $fileFullPath.Substring($xamlRootFullPath.Length)
         $destination = Join-Path $DestinationRoot $relative
         $destinationDirectory = Split-Path -Parent $destination
         New-Item -ItemType Directory -Force -Path $destinationDirectory | Out-Null
         Copy-Item -LiteralPath $file.FullName -Destination $destination -Force
+    }
+
+    $requiredXamlArtifacts = @(
+        "VisiTexta.pri",
+        "App.xbf",
+        "MainWindow.xbf",
+        "Pages\NewOcrPage.xbf"
+    )
+    foreach ($relative in $requiredXamlArtifacts) {
+        $expected = Join-Path $DestinationRoot $relative
+        if (-not (Test-Path -LiteralPath $expected)) {
+            throw "Required WinUI resource was not staged: $relative"
+        }
     }
 }
 

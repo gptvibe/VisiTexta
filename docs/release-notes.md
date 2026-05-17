@@ -1,5 +1,17 @@
 # Release Notes
 
+## 3.0.5
+
+VisiTexta 3.0.5 fixes the New OCR page crash introduced while wiring native streaming output.
+
+Highlights:
+
+- The New OCR page no longer uses unsupported `Grid.Padding` XAML, so WinUI can instantiate the page at startup.
+- Other native pages now avoid the same runtime-only XAML parser failure when opened from the sidebar.
+- Portable release builds now fail fast if required WinUI `.xbf` or `.pri` resources are not staged.
+- Streaming OCR deltas still append into the output box while the worker reports progress.
+- Native package metadata and model-download user agent are aligned with the 3.0.5 patch release.
+
 ## 3.0.4
 
 VisiTexta 3.0.4 fixes a native WinUI startup failure that left the process running without ever showing a window on some Windows systems.

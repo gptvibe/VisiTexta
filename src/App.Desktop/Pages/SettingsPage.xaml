@@ -5,7 +5,8 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <ScrollViewer>
-        <StackPanel Padding="28" Spacing="16">
+        <Border Padding="28">
+            <StackPanel Spacing="16">
             <StackPanel Spacing="4">
                 <TextBlock Text="Settings" Style="{StaticResource SectionTitleTextBlockStyle}" />
                 <TextBlock Text="Native Windows preferences, storage paths, runtime profile, and local-first defaults." Style="{StaticResource MutedTextBlockStyle}" />
@@ -54,6 +55,7 @@
                     <TextBlock Text="OCR, PDF rendering, document processing, history, settings, and exports are local. The network is used only when you download model files." Style="{StaticResource MutedTextBlockStyle}" />
                 </StackPanel>
             </Border>
-        </StackPanel>
+            </StackPanel>
+        </Border>
     </ScrollViewer>
 </Page>
