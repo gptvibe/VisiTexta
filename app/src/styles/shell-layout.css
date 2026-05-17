@@ -189,7 +189,7 @@
 
 .workspace {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: 296px minmax(0, 1fr);
   gap: 10px;
   align-items: stretch;
   min-height: 0;
@@ -207,6 +207,7 @@
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
+  min-height: 0;
 }
 
 .workspace-rail {
@@ -260,7 +261,7 @@
 
 @media (max-width: 1400px) {
   .workspace {
-    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-columns: 272px minmax(0, 1fr);
   }
 }
 

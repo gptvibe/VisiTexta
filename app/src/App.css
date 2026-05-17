@@ -90,16 +90,26 @@
 .queue-panel {
   display: flex;
   flex-direction: column;
-  padding: 10px;
-  background: color-mix(in srgb, var(--surface) 88%, var(--canvas-muted));
+  padding: 8px;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-subtle) 92%, var(--canvas-muted)),
+      color-mix(in srgb, var(--surface) 90%, var(--canvas-muted))
+    );
   border-color: color-mix(in srgb, var(--border-strong) 72%, var(--border));
 }
 
 .queue-header {
   justify-content: space-between;
-  margin-bottom: 10px;
-  padding: 4px 4px 10px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin-bottom: 8px;
+  padding: 6px 6px 10px;
   border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 96%, var(--canvas-muted));
+  backdrop-filter: blur(10px);
 }
 
 .queue-header-copy {
@@ -126,13 +136,13 @@
 .queue-count-pill {
   display: inline-flex;
   align-items: center;
-  min-height: 22px;
-  padding: 3px 8px;
+  min-height: 20px;
+  padding: 2px 7px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface-subtle) 88%, var(--surface));
   color: var(--text-soft);
-  font-size: 10px;
+  font-size: 9px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   white-space: nowrap;
@@ -149,14 +159,14 @@
 .queue-filter {
   min-width: 0;
   min-height: var(--control-height-sm);
-  padding: 4px 10px;
+  padding: 4px 9px;
   border: 0;
   border-radius: 8px;
   background: transparent;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
@@ -181,10 +191,10 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding-right: 2px;
+  padding: 2px;
   border: 1px solid var(--border);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--surface-subtle) 92%, var(--surface));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-subtle) 94%, var(--surface));
 }
 
 .queue-empty,
@@ -221,10 +231,9 @@
   width: 100%;
   text-align: left;
   color: var(--text);
-  border-radius: 0;
-  border: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
-  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  padding: 9px 10px;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -232,10 +241,11 @@
   transition: border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease,
     transform 120ms ease;
   box-shadow: none;
+  margin-bottom: 2px;
 }
 
 .queue-item:last-child {
-  border-bottom: 0;
+  margin-bottom: 0;
 }
 
 .queue-item-shell,
@@ -246,13 +256,13 @@
 
 .queue-item-shell {
   align-items: flex-start;
-  gap: 10px;
+  gap: 9px;
 }
 
 .queue-item-copy {
   flex: 1;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .queue-item:hover,
@@ -274,11 +284,11 @@
 }
 
 .queue-item.selected {
-  border-color: transparent;
-  background: color-mix(in srgb, var(--accent-soft) 22%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 18%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 28%, var(--surface));
   box-shadow:
-    inset 3px 0 0 var(--accent),
-    0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+    inset 2px 0 0 var(--accent),
+    0 10px 22px rgba(15, 23, 42, 0.06);
 }
 
 .queue-item.selected .queue-file-icon {
@@ -316,7 +326,7 @@
 }
 
 .queue-name {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -324,8 +334,8 @@
 }
 
 .queue-file-icon {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -334,7 +344,7 @@
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 72%, var(--surface-subtle));
   color: var(--text-soft);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.08em;
 }
@@ -377,7 +387,7 @@
 }
 
 .queue-secondary {
-  font-size: 10.5px;
+  font-size: 10px;
   line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
@@ -485,7 +495,7 @@
 }
 
 .queue-progress {
-  height: 4px;
+  height: 3px;
   border-radius: 999px;
   background: var(--surface-inset);
   overflow: hidden;
