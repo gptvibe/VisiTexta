@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -56,6 +59,7 @@ catch (Exception ex)
 
 static async Task RunJobAsync(OcrWorkerJob job)
 {
+    var stopwatch = Stopwatch.StartNew();
     Emit(new { @event = "job_started", job_id = job.JobId, source_path = job.SourcePath, message = "Preparing document" });
 
     if (!File.Exists(job.SourcePath))
@@ -68,26 +72,103 @@ static async Task RunJobAsync(OcrWorkerJob job)
     Directory.CreateDirectory(job.TempDirectory);
     Directory.CreateDirectory(job.LogDirectory);
 
-    var totalPages = job.SourcePath.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) ? 1 : 1;
-    Emit(new { @event = "progress", job_id = job.JobId, stage = "rendering", percent = 5, page_number = 1, total_pages = totalPages, rendered_pages = 0, recognized_pages = 0, message = "Preparing page 1 of 1" });
-    Emit(new { @event = "page_started", job_id = job.JobId, page_number = 1, total_pages = totalPages, message = "Reading page 1 of 1" });
-
-    var rawText = await RecognizeAsync(job);
-    foreach (var delta in Chunk(rawText, 180))
+    var cliCandidates = ResolveLlamaCliCandidates(job).ToList();
+    if (cliCandidates.Count == 0)
     {
-        Emit(new { @event = "text_delta", job_id = job.JobId, page_number = 1, delta });
-        await Task.Delay(12);
+        Emit(new { @event = "error", job_id = job.JobId, code = "local_runtime_missing", message = "No local llama OCR runtime was found. Use the bundled portable release or add llama-mtmd-cli.exe under bin.", recoverable = true });
+        return;
     }
 
-    var pageMarkdown = $"## Page 1\n\n{rawText.Trim()}\n";
-    Emit(new { @event = "page_done", job_id = job.JobId, page_number = 1, total_pages = totalPages, page_markdown = pageMarkdown });
-    Emit(new { @event = "progress", job_id = job.JobId, stage = "formatting", percent = 80, page_number = 1, total_pages = totalPages, rendered_pages = 1, recognized_pages = 1, message = "Formatting OCR output" });
+    if (string.IsNullOrWhiteSpace(job.ModelPath) || !File.Exists(job.ModelPath))
+    {
+        Emit(new { @event = "error", job_id = job.JobId, code = "model_missing", message = "No ready local OCR model was found. Download the recommended GLM-OCR model from the Models page.", recoverable = true });
+        return;
+    }
+
+    if (string.IsNullOrWhiteSpace(job.MmprojPath) || !File.Exists(job.MmprojPath))
+    {
+        Emit(new { @event = "error", job_id = job.JobId, code = "mmproj_missing", message = "The selected OCR model is missing its companion mmproj file. Redownload the model profile from the Models page.", recoverable = true });
+        return;
+    }
+
+    IReadOnlyList<RenderedPage> pages;
+    if (job.SourcePath.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+    {
+        var pdfiumPath = ResolvePdfiumPath(job);
+        if (string.IsNullOrWhiteSpace(pdfiumPath))
+        {
+            Emit(new { @event = "error", job_id = job.JobId, code = "pdfium_missing", message = "PDF OCR needs pdfium.dll under bin. Use the bundled portable release or open Diagnostics for searched paths.", recoverable = true });
+            return;
+        }
+
+        try
+        {
+            pages = PdfiumRenderer.Render(job, pdfiumPath, Emit);
+        }
+        catch (Exception ex)
+        {
+            Emit(new { @event = "error", job_id = job.JobId, code = "pdf_render_failed", message = "PDF rendering failed: " + ex.Message, recoverable = true });
+            return;
+        }
+    }
+    else if (IsSupportedImage(job.SourcePath))
+    {
+        pages = [new RenderedPage(1, 1, job.SourcePath, job.SourcePath)];
+        Emit(new { @event = "progress", job_id = job.JobId, stage = "rendering", percent = 5, page_number = 1, total_pages = 1, rendered_pages = 1, recognized_pages = 0, message = "Prepared image input" });
+    }
+    else
+    {
+        Emit(new { @event = "error", job_id = job.JobId, code = "unsupported_source", message = "VisiTexta Native supports PNG, JPG, JPEG, and PDF inputs.", recoverable = true });
+        return;
+    }
+
+    if (pages.Count == 0)
+    {
+        Emit(new { @event = "error", job_id = job.JobId, code = "empty_document", message = "No pages were found to OCR.", recoverable = true });
+        return;
+    }
+
+    var totalPages = pages.Count;
+    var pageMarkdown = new List<string>(totalPages);
+    var recognizedPages = 0;
+    foreach (var page in pages)
+    {
+        var pagePercent = 10 + (recognizedPages * 70.0 / totalPages);
+        Emit(new { @event = "page_started", job_id = job.JobId, page_number = page.PageNumber, total_pages = totalPages, percent = pagePercent, message = $"Reading page {page.PageNumber} of {totalPages}" });
+        Emit(new { @event = "progress", job_id = job.JobId, stage = "ocr", percent = pagePercent, page_number = page.PageNumber, total_pages = totalPages, rendered_pages = totalPages, recognized_pages = recognizedPages, message = $"Running local OCR on page {page.PageNumber} of {totalPages}" });
+
+        string rawText;
+        try
+        {
+            rawText = await RecognizeImageAsync(cliCandidates, job, page.ImagePath);
+        }
+        catch (Exception ex)
+        {
+            Emit(new { @event = "error", job_id = job.JobId, code = "runtime_failed", message = "Local OCR runtime failed: " + ex.Message, recoverable = true });
+            return;
+        }
+
+        foreach (var delta in Chunk(rawText, 180))
+        {
+            Emit(new { @event = "text_delta", job_id = job.JobId, page_number = page.PageNumber, delta });
+            await Task.Delay(12);
+        }
+
+        var markdown = $"## Page {page.PageNumber}\n\n{rawText.Trim()}\n";
+        pageMarkdown.Add(markdown);
+        recognizedPages++;
+        var donePercent = 10 + (recognizedPages * 70.0 / totalPages);
+        Emit(new { @event = "page_done", job_id = job.JobId, page_number = page.PageNumber, total_pages = totalPages, page_markdown = markdown, preview_image_path = page.PreviewImagePath });
+        Emit(new { @event = "progress", job_id = job.JobId, stage = "ocr", percent = donePercent, page_number = page.PageNumber, total_pages = totalPages, rendered_pages = totalPages, recognized_pages = recognizedPages, message = $"Finished page {page.PageNumber} of {totalPages}" });
+    }
+
+    Emit(new { @event = "progress", job_id = job.JobId, stage = "formatting", percent = 84, page_number = totalPages, total_pages = totalPages, rendered_pages = totalPages, recognized_pages = recognizedPages, message = "Formatting OCR output" });
 
     var finalMarkdown = job.Mode switch
     {
-        OcrWorkflowMode.Notes => NotesProcessor.BuildNotes([pageMarkdown], job.StudyBoost, job.PromptOverride),
-        OcrWorkflowMode.Extract => ExtractProcessor.BuildExtract([pageMarkdown], job.ExtractTemplateId, job.PromptOverride),
-        _ => MarkdownFormatter.CleanMarkdown(pageMarkdown)
+        OcrWorkflowMode.Notes => NotesProcessor.BuildNotes(pageMarkdown, job.StudyBoost, job.PromptOverride),
+        OcrWorkflowMode.Extract => ExtractProcessor.BuildExtract(pageMarkdown, job.ExtractTemplateId, job.PromptOverride),
+        _ => MarkdownFormatter.CleanMarkdown(string.Join("\n\n", pageMarkdown))
     };
 
     if (string.IsNullOrWhiteSpace(finalMarkdown))
@@ -96,42 +177,40 @@ static async Task RunJobAsync(OcrWorkerJob job)
         return;
     }
 
-    Emit(new { @event = "progress", job_id = job.JobId, stage = "writing", percent = 92, page_number = 1, total_pages = totalPages, rendered_pages = 1, recognized_pages = 1, message = "Saving Markdown" });
+    Emit(new { @event = "progress", job_id = job.JobId, stage = "writing", percent = 94, page_number = totalPages, total_pages = totalPages, rendered_pages = totalPages, recognized_pages = recognizedPages, message = "Saving Markdown" });
     await File.WriteAllTextAsync(job.OutputMarkdownPath, finalMarkdown, Encoding.UTF8);
-    Emit(new { @event = "done", job_id = job.JobId, status = "done", pages = totalPages, output_markdown_path = job.OutputMarkdownPath, elapsed_ms = 0, warnings = Array.Empty<string>() });
+    Emit(new { @event = "done", job_id = job.JobId, status = "done", pages = totalPages, output_markdown_path = job.OutputMarkdownPath, elapsed_ms = stopwatch.ElapsedMilliseconds, warnings = Array.Empty<string>() });
 }
 
-static async Task<string> RecognizeAsync(OcrWorkerJob job)
+static async Task<string> RecognizeImageAsync(IReadOnlyList<string> cliCandidates, OcrWorkerJob job, string imagePath)
 {
-    if (job.SourcePath.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
-    {
-        Emit(new { @event = "warning", job_id = job.JobId, code = "pdfium_pending", message = "PDFium rendering is scaffolded for native v1, but this worker build has not yet enabled page rendering." });
-        return $"Local OCR worker accepted PDF '{Path.GetFileName(job.SourcePath)}'. PDFium rendering is the next implementation slice.";
-    }
-
-    var cliPath = job.FallbackCliPaths.Concat(job.PreferredServerPaths)
-        .FirstOrDefault(path => File.Exists(path) && Path.GetFileName(path).StartsWith("llama", StringComparison.OrdinalIgnoreCase));
-    if (!string.IsNullOrWhiteSpace(cliPath) && File.Exists(job.ModelPath ?? string.Empty))
+    var errors = new List<string>();
+    foreach (var cliPath in cliCandidates)
     {
         try
         {
-            var text = await RunLlamaCliAsync(cliPath, job);
+            var text = await RunLlamaCliAsync(cliPath, job, imagePath);
             if (!string.IsNullOrWhiteSpace(text))
             {
                 return text;
             }
+
+            errors.Add(Path.GetFileName(cliPath) + " produced no OCR text.");
         }
         catch (Exception ex)
         {
-            Emit(new { @event = "warning", job_id = job.JobId, code = "runtime_fallback", message = "Local llama runtime failed: " + ex.Message });
+            errors.Add(Path.GetFileName(cliPath) + ": " + ex.Message);
+            if (cliCandidates.Count > 1)
+            {
+                Emit(new { @event = "warning", job_id = job.JobId, code = "runtime_fallback", message = Path.GetFileName(cliPath) + " failed; trying the next local runtime." });
+            }
         }
     }
 
-    Emit(new { @event = "warning", job_id = job.JobId, code = "runtime_pending", message = "No ready local OCR runtime/model was found. Returning protocol placeholder output." });
-    return $"Local OCR worker accepted image '{Path.GetFileName(job.SourcePath)}'. Download an OCR model and add llama runtime files under bin to enable full local OCR.";
+    throw new InvalidOperationException(errors.Count == 0 ? "No local llama OCR runtime was available." : string.Join(" | ", errors));
 }
 
-static async Task<string> RunLlamaCliAsync(string cliPath, OcrWorkerJob job)
+static async Task<string> RunLlamaCliAsync(string cliPath, OcrWorkerJob job, string imagePath)
 {
     var prompt = string.IsNullOrWhiteSpace(job.PromptOverride)
         ? "Transcribe the visible document text as markdown."
@@ -143,12 +222,13 @@ static async Task<string> RunLlamaCliAsync(string cliPath, OcrWorkerJob job)
         RedirectStandardOutput = true,
         RedirectStandardError = true,
         UseShellExecute = false,
-        CreateNoWindow = true
+        CreateNoWindow = true,
+        WorkingDirectory = Path.GetDirectoryName(cliPath) ?? Environment.CurrentDirectory
     };
     process.StartInfo.ArgumentList.Add("-m");
     process.StartInfo.ArgumentList.Add(job.ModelPath!);
     process.StartInfo.ArgumentList.Add("--image");
-    process.StartInfo.ArgumentList.Add(job.SourcePath);
+    process.StartInfo.ArgumentList.Add(imagePath);
     process.StartInfo.ArgumentList.Add("-p");
     process.StartInfo.ArgumentList.Add(prompt);
     process.StartInfo.ArgumentList.Add("-n");
@@ -173,10 +253,74 @@ static async Task<string> RunLlamaCliAsync(string cliPath, OcrWorkerJob job)
     var stderr = await stderrTask;
     if (process.ExitCode != 0)
     {
-        throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? "llama runtime exited with an error." : stderr.Trim());
+        throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? "llama runtime exited with an error." : CompactRuntimeError(stderr));
     }
 
     return Sanitize(stdout);
+}
+
+static IEnumerable<string> ResolveLlamaCliCandidates(OcrWorkerJob job)
+{
+    var preferredNames = new[]
+    {
+        "llama-mtmd-cli",
+        "llama-llava-cli",
+        "llama-qwen2vl-cli",
+        "llama-minicpmv-cli",
+        "llama-gemma3-cli",
+        "llama-cli"
+    };
+
+    return job.FallbackCliPaths.Concat(job.PreferredServerPaths)
+        .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+        .Where(path => preferredNames.Contains(Path.GetFileNameWithoutExtension(path), StringComparer.OrdinalIgnoreCase))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(path =>
+        {
+            var name = Path.GetFileNameWithoutExtension(path);
+            var index = Array.FindIndex(preferredNames, item => item.Equals(name, StringComparison.OrdinalIgnoreCase));
+            return index < 0 ? preferredNames.Length : index;
+        })
+        .ThenBy(path => path.Length);
+}
+
+static bool IsSupportedImage(string path)
+{
+    var extension = Path.GetExtension(path);
+    return extension.Equals(".png", StringComparison.OrdinalIgnoreCase)
+        || extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase)
+        || extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase);
+}
+
+static string? ResolvePdfiumPath(OcrWorkerJob job)
+{
+    if (!string.IsNullOrWhiteSpace(job.PdfiumPath) && File.Exists(job.PdfiumPath))
+    {
+        return job.PdfiumPath;
+    }
+
+    var runtimeDirectories = job.FallbackCliPaths.Concat(job.PreferredServerPaths)
+        .Where(path => !string.IsNullOrWhiteSpace(path))
+        .Select(Path.GetDirectoryName)
+        .Where(path => !string.IsNullOrWhiteSpace(path))
+        .Select(path => path!);
+
+    var baseDirectory = AppContext.BaseDirectory;
+    var currentDirectory = Environment.CurrentDirectory;
+    var roots = runtimeDirectories.Concat([
+        Path.Combine(baseDirectory, "bin"),
+        Path.Combine(baseDirectory, "resources", "bin"),
+        baseDirectory,
+        Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "bin")),
+        Path.Combine(currentDirectory, "bin"),
+        Path.Combine(currentDirectory, "resources", "bin"),
+        Path.Combine(currentDirectory, "app", "src-tauri", "bin")
+    ]);
+
+    return roots
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Select(root => Path.Combine(root, "pdfium.dll"))
+        .FirstOrDefault(File.Exists);
 }
 
 static string Sanitize(string text)
@@ -189,6 +333,36 @@ static string Sanitize(string text)
         .Where(line => !line.StartsWith("build:", StringComparison.OrdinalIgnoreCase))
         .Where(line => !line.StartsWith("model:", StringComparison.OrdinalIgnoreCase));
     return string.Join('\n', kept).Trim();
+}
+
+static string CompactRuntimeError(string text)
+{
+    var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n')
+        .Select(line => line.Trim())
+        .Where(line => !string.IsNullOrWhiteSpace(line))
+        .Where(line => !line.StartsWith("load_backend:", StringComparison.OrdinalIgnoreCase))
+        .Where(line => !line.StartsWith("build:", StringComparison.OrdinalIgnoreCase))
+        .Where(line => !line.StartsWith("common_init_result:", StringComparison.OrdinalIgnoreCase))
+        .Where(line => !line.StartsWith("llama_params_fit:", StringComparison.OrdinalIgnoreCase))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    var relevant = lines
+        .Where(line =>
+            line.Contains("error", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("failed", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("invalid", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("missing", StringComparison.OrdinalIgnoreCase))
+        .Take(6)
+        .ToList();
+
+    if (relevant.Count == 0)
+    {
+        relevant = lines.TakeLast(4).ToList();
+    }
+
+    var compact = string.Join(" | ", relevant);
+    return compact.Length <= 1200 ? compact : compact[..1200] + "...";
 }
 
 static IEnumerable<string> Chunk(string text, int size)
@@ -208,6 +382,209 @@ static void Emit(object payload)
 static string? GetString(JsonElement root, string property)
 {
     return root.TryGetProperty(property, out var value) ? value.GetString() : null;
+}
+
+internal sealed record RenderedPage(int PageNumber, int TotalPages, string ImagePath, string? PreviewImagePath);
+
+internal static class PdfiumRenderer
+{
+    private const int FpdfAnnot = 0x01;
+    private const int MaxWorkerRenderDimension = 4096;
+
+    public static IReadOnlyList<RenderedPage> Render(OcrWorkerJob job, string pdfiumPath, Action<object> emit)
+    {
+        PdfiumNative.Load(pdfiumPath);
+        PdfiumNative.FPDF_InitLibrary();
+        try
+        {
+            var safePdfPath = Path.Combine(job.TempDirectory, "source.pdf");
+            File.Copy(job.SourcePath, safePdfPath, overwrite: true);
+
+            var document = PdfiumNative.FPDF_LoadDocument(safePdfPath, null);
+            if (document == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("PDFium could not open the document.");
+            }
+
+            try
+            {
+                var pageCount = PdfiumNative.FPDF_GetPageCount(document);
+                if (pageCount <= 0)
+                {
+                    return [];
+                }
+
+                var rendered = new List<RenderedPage>(pageCount);
+                for (var index = 0; index < pageCount; index++)
+                {
+                    var pageNumber = index + 1;
+                    emit(new { @event = "progress", job_id = job.JobId, stage = "rendering", percent = Math.Min(5 + (index * 45.0 / pageCount), 50), page_number = pageNumber, total_pages = pageCount, rendered_pages = index, recognized_pages = 0, message = $"Rendering page {pageNumber} of {pageCount}" });
+
+                    var outputPath = Path.Combine(job.TempDirectory, $"page-{pageNumber:0000}.png");
+                    RenderPage(document, index, outputPath, job.Dpi, job.MaxOcrDimension);
+                    rendered.Add(new RenderedPage(pageNumber, pageCount, outputPath, outputPath));
+
+                    emit(new { @event = "progress", job_id = job.JobId, stage = "rendering", percent = Math.Min(5 + (pageNumber * 45.0 / pageCount), 50), page_number = pageNumber, total_pages = pageCount, rendered_pages = pageNumber, recognized_pages = 0, message = $"Rendered page {pageNumber} of {pageCount}" });
+                }
+
+                return rendered;
+            }
+            finally
+            {
+                PdfiumNative.FPDF_CloseDocument(document);
+            }
+        }
+        finally
+        {
+            PdfiumNative.FPDF_DestroyLibrary();
+        }
+    }
+
+    private static void RenderPage(IntPtr document, int pageIndex, string outputPath, int dpi, int maxDimension)
+    {
+        var page = PdfiumNative.FPDF_LoadPage(document, pageIndex);
+        if (page == IntPtr.Zero)
+        {
+            throw new InvalidOperationException($"PDFium could not load page {pageIndex + 1}.");
+        }
+
+        try
+        {
+            var widthPoints = PdfiumNative.FPDF_GetPageWidth(page);
+            var heightPoints = PdfiumNative.FPDF_GetPageHeight(page);
+            if (widthPoints <= 0 || heightPoints <= 0)
+            {
+                throw new InvalidOperationException($"PDF page {pageIndex + 1} has invalid dimensions.");
+            }
+
+            var scale = Math.Max(72, dpi) / 72.0;
+            var width = Math.Max(1, (int)Math.Round(widthPoints * scale));
+            var height = Math.Max(1, (int)Math.Round(heightPoints * scale));
+            var effectiveMax = Math.Clamp(maxDimension <= 0 ? 1600 : maxDimension, 256, MaxWorkerRenderDimension);
+            var longest = Math.Max(width, height);
+            if (longest > effectiveMax)
+            {
+                var ratio = effectiveMax / (double)longest;
+                width = Math.Max(1, (int)Math.Round(width * ratio));
+                height = Math.Max(1, (int)Math.Round(height * ratio));
+            }
+
+            var pdfBitmap = PdfiumNative.FPDFBitmap_Create(width, height, alpha: 0);
+            if (pdfBitmap == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("PDFium could not allocate a page bitmap.");
+            }
+
+            try
+            {
+                PdfiumNative.FPDFBitmap_FillRect(pdfBitmap, 0, 0, width, height, 0xFFFFFFFF);
+                PdfiumNative.FPDF_RenderPageBitmap(pdfBitmap, page, 0, 0, width, height, rotate: 0, flags: FpdfAnnot);
+                SavePdfiumBitmapAsPng(pdfBitmap, outputPath, width, height);
+            }
+            finally
+            {
+                PdfiumNative.FPDFBitmap_Destroy(pdfBitmap);
+            }
+        }
+        finally
+        {
+            PdfiumNative.FPDF_ClosePage(page);
+        }
+    }
+
+    private static void SavePdfiumBitmapAsPng(IntPtr pdfBitmap, string outputPath, int width, int height)
+    {
+        var buffer = PdfiumNative.FPDFBitmap_GetBuffer(pdfBitmap);
+        var sourceStride = PdfiumNative.FPDFBitmap_GetStride(pdfBitmap);
+        if (buffer == IntPtr.Zero || sourceStride <= 0)
+        {
+            throw new InvalidOperationException("PDFium returned an empty page bitmap.");
+        }
+
+        using var bitmap = new Bitmap(width, height, PixelFormat.Format32bppRgb);
+        var bounds = new Rectangle(0, 0, width, height);
+        var data = bitmap.LockBits(bounds, ImageLockMode.WriteOnly, PixelFormat.Format32bppRgb);
+        try
+        {
+            var rowBytes = width * 4;
+            var row = new byte[rowBytes];
+            var destinationStride = Math.Abs(data.Stride);
+            for (var y = 0; y < height; y++)
+            {
+                Marshal.Copy(IntPtr.Add(buffer, y * sourceStride), row, 0, rowBytes);
+                var destinationRow = data.Stride < 0
+                    ? IntPtr.Add(data.Scan0, (height - 1 - y) * destinationStride)
+                    : IntPtr.Add(data.Scan0, y * destinationStride);
+                Marshal.Copy(row, 0, destinationRow, rowBytes);
+            }
+        }
+        finally
+        {
+            bitmap.UnlockBits(data);
+        }
+
+        bitmap.Save(outputPath, ImageFormat.Png);
+    }
+}
+
+internal static partial class PdfiumNative
+{
+    private static IntPtr _libraryHandle;
+
+    public static void Load(string path)
+    {
+        if (_libraryHandle != IntPtr.Zero)
+        {
+            return;
+        }
+
+        _libraryHandle = NativeLibrary.Load(path);
+    }
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void FPDF_InitLibrary();
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void FPDF_DestroyLibrary();
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr FPDF_LoadDocument(string filePath, string? password);
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void FPDF_CloseDocument(IntPtr document);
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int FPDF_GetPageCount(IntPtr document);
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr FPDF_LoadPage(IntPtr document, int pageIndex);
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void FPDF_ClosePage(IntPtr page);
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern double FPDF_GetPageWidth(IntPtr page);
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern double FPDF_GetPageHeight(IntPtr page);
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr FPDFBitmap_Create(int width, int height, int alpha);
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void FPDFBitmap_Destroy(IntPtr bitmap);
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr FPDFBitmap_GetBuffer(IntPtr bitmap);
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int FPDFBitmap_GetStride(IntPtr bitmap);
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void FPDFBitmap_FillRect(IntPtr bitmap, int left, int top, int width, int height, uint color);
+
+    [DllImport("pdfium.dll", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void FPDF_RenderPageBitmap(IntPtr bitmap, IntPtr page, int startX, int startY, int sizeX, int sizeY, int rotate, int flags);
 }
 
 internal sealed record OcrWorkerJob
@@ -230,11 +607,17 @@ internal sealed record OcrWorkerJob
 
     public string ExtractTemplateId { get; init; } = "invoice_receipt";
 
+    public int Dpi { get; init; } = 300;
+
+    public int MaxOcrDimension { get; init; } = 1600;
+
     public int Threads { get; init; } = Math.Max(1, Environment.ProcessorCount - 1);
 
     public string? ModelPath { get; init; }
 
     public string? MmprojPath { get; init; }
+
+    public string? PdfiumPath { get; init; }
 
     public IReadOnlyList<string> PreferredServerPaths { get; init; } = [];
 
@@ -268,8 +651,11 @@ internal sealed record OcrWorkerJob
             PromptOverride = GetString(root, "prompt_override"),
             StudyBoost = root.TryGetProperty("study_boost", out var study) && study.GetBoolean(),
             ExtractTemplateId = GetString(root, "extract_template_id") ?? "invoice_receipt",
+            Dpi = GetInt(root, "dpi") ?? 300,
+            MaxOcrDimension = GetInt(root, "max_ocr_dimension") ?? 1600,
             ModelPath = model.ValueKind == JsonValueKind.Object ? GetString(model, "model_path") : null,
             MmprojPath = model.ValueKind == JsonValueKind.Object ? GetString(model, "mmproj_path") : null,
+            PdfiumPath = runtime.ValueKind == JsonValueKind.Object ? GetString(runtime, "pdfium_path") : null,
             PreferredServerPaths = runtime.ValueKind == JsonValueKind.Object ? GetStringArray(runtime, "preferred_server_paths") : [],
             FallbackCliPaths = runtime.ValueKind == JsonValueKind.Object ? GetStringArray(runtime, "fallback_cli_paths") : []
         };
@@ -285,6 +671,11 @@ internal sealed record OcrWorkerJob
     private static string? GetString(JsonElement root, string property)
     {
         return root.TryGetProperty(property, out var value) ? value.GetString() : null;
+    }
+
+    private static int? GetInt(JsonElement root, string property)
+    {
+        return root.TryGetProperty(property, out var value) && value.TryGetInt32(out var result) ? result : null;
     }
 
     private static IReadOnlyList<string> GetStringArray(JsonElement root, string property)

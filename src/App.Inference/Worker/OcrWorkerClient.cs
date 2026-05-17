@@ -71,6 +71,8 @@ public sealed class OcrWorkerClient : IOcrWorkerClient
         };
         await _history.SaveAsync(historyItem, cancellationToken);
 
+        try
+        {
         using var process = CreateProcess();
         try
         {
@@ -221,6 +223,27 @@ public sealed class OcrWorkerClient : IOcrWorkerClient
             Warnings = result.Warnings
         }, cancellationToken);
         return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await _history.SaveAsync(historyItem with
+            {
+                Status = OcrJobStatus.Canceled,
+                Error = "OCR job was canceled.",
+                Warnings = warnings
+            }, CancellationToken.None);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await _history.SaveAsync(historyItem with
+            {
+                Status = OcrJobStatus.Failed,
+                Error = ex.Message,
+                Warnings = warnings
+            }, CancellationToken.None);
+            throw;
+        }
     }
 
     private static OcrJobOptions MergeOptions(AppSettings settings, OcrJobOptions options)
@@ -284,6 +307,7 @@ public sealed class OcrWorkerClient : IOcrWorkerClient
         {
             Path.Combine(AppContext.BaseDirectory, "workers", "ocr-worker", "ocr-worker.exe"),
             Path.Combine(AppContext.BaseDirectory, "ocr-worker.exe"),
+            Path.Combine(Environment.CurrentDirectory, "workers", "ocr-worker", "bin", "Debug", "net10.0-windows10.0.17763.0", "ocr-worker.exe"),
             Path.Combine(Environment.CurrentDirectory, "workers", "ocr-worker", "bin", "Debug", "net10.0", "ocr-worker.exe")
         };
 
@@ -340,7 +364,8 @@ public sealed class OcrWorkerClient : IOcrWorkerClient
             {
                 profile = options.RuntimeProfile,
                 preferred_server_paths = runtime.ServerRuntimes.Select(item => item.Path).ToArray(),
-                fallback_cli_paths = runtime.CliRuntimes.Select(item => item.Path).ToArray()
+                fallback_cli_paths = runtime.CliRuntimes.Select(item => item.Path).ToArray(),
+                pdfium_path = runtime.PdfiumPath
             }
         };
         return JsonSerializer.Serialize(payload, JsonOptions);

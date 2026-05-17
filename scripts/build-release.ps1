@@ -1,5 +1,9 @@
 param(
-    [string]$Version = "0.3.0"
+    [string]$Version = "3.0.0",
+    [string]$SignToolPath = $env:VISITEXTA_SIGNTOOL,
+    [string]$CertificatePath = $env:VISITEXTA_CERT_PATH,
+    [string]$CertificatePassword = $env:VISITEXTA_CERT_PASSWORD,
+    [string]$TimestampUrl = $(if ($env:VISITEXTA_TIMESTAMP_URL) { $env:VISITEXTA_TIMESTAMP_URL } else { "http://timestamp.digicert.com" })
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,6 +18,69 @@ $portableZip = Join-Path $releaseDir "VisiTexta-v$Version-win-x64-portable.zip"
 function Remove-DirectoryIfExists([string]$Path) {
     if (Test-Path -LiteralPath $Path) {
         Remove-Item -LiteralPath $Path -Recurse -Force
+    }
+}
+
+function Copy-AssetFolder([string]$Name) {
+    $candidates = @(
+        (Join-Path $repoRoot $Name),
+        (Join-Path $repoRoot "app\src-tauri\$Name")
+    )
+
+    $source = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ($null -eq $source) {
+        return
+    }
+
+    $destination = Join-Path $stageDir $Name
+    Remove-DirectoryIfExists $destination
+    Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force
+}
+
+function Resolve-SignToolPath {
+    if (-not [string]::IsNullOrWhiteSpace($SignToolPath) -and (Test-Path -LiteralPath $SignToolPath)) {
+        return $SignToolPath
+    }
+
+    $windowsKitsRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+    if (-not (Test-Path -LiteralPath $windowsKitsRoot)) {
+        return $null
+    }
+
+    return Get-ChildItem -LiteralPath $windowsKitsRoot -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -like "*\x64\signtool.exe" } |
+        Sort-Object FullName -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+}
+
+function Invoke-OptionalCodeSigning {
+    if ([string]::IsNullOrWhiteSpace($CertificatePath)) {
+        Write-Host "Code signing skipped. Set VISITEXTA_CERT_PATH or pass -CertificatePath to sign the portable release."
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $CertificatePath)) {
+        throw "Certificate file was not found: $CertificatePath"
+    }
+
+    $resolvedSignTool = Resolve-SignToolPath
+    if ([string]::IsNullOrWhiteSpace($resolvedSignTool)) {
+        throw "signtool.exe was not found. Pass -SignToolPath or install the Windows SDK signing tools."
+    }
+
+    $signArgs = @("sign", "/fd", "SHA256", "/f", $CertificatePath, "/tr", $TimestampUrl, "/td", "SHA256")
+    if (-not [string]::IsNullOrWhiteSpace($CertificatePassword)) {
+        $signArgs += @("/p", $CertificatePassword)
+    }
+
+    $targets = Get-ChildItem -LiteralPath $stageDir -Recurse -Include *.exe -File |
+        Where-Object { $_.FullName -notlike "*\portable-data\*" }
+
+    foreach ($target in $targets) {
+        & $resolvedSignTool @signArgs $target.FullName
+        if ($LASTEXITCODE -ne 0) {
+            throw "Code signing failed for $($target.FullName)"
+        }
     }
 }
 
@@ -52,16 +119,14 @@ Remove-DirectoryIfExists $workerStageDir
 New-Item -ItemType Directory -Force -Path $workerStageDir | Out-Null
 Copy-Item -Path (Join-Path $workerPublishDir "*") -Destination $workerStageDir -Recurse -Force
 
-foreach ($folder in @("bin", "resources")) {
-    $source = Join-Path $repoRoot $folder
-    if (Test-Path -LiteralPath $source) {
-        Copy-Item -LiteralPath $source -Destination (Join-Path $stageDir $folder) -Recurse -Force
-    }
-}
+Copy-AssetFolder "bin"
+Copy-AssetFolder "resources"
 
 $portableDataDir = Join-Path $stageDir "portable-data"
 New-Item -ItemType Directory -Force -Path $portableDataDir | Out-Null
 Set-Content -LiteralPath (Join-Path $portableDataDir ".keep") -Value "VisiTexta portable data lives here." -Encoding ascii
+
+Invoke-OptionalCodeSigning
 
 Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $portableZip -Force
 Get-Item -LiteralPath $portableZip | Select-Object FullName, Length

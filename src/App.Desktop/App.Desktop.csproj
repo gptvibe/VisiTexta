@@ -8,7 +8,7 @@
     <Product>VisiTexta</Product>
     <Description>Local-first OCR for images and PDFs on Windows</Description>
     <Authors>gptvibe</Authors>
-    <Version>0.3.0</Version>
+    <Version>3.0.0</Version>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Platforms>x86;x64;ARM64</Platforms>
@@ -26,10 +26,6 @@
     <Content Include="Assets\AppIcon.ico" Condition="Exists('Assets\AppIcon.ico')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-    </Content>
-    <Content Include="..\..\workers\ocr-worker\**\*">
-      <Link>workers\ocr-worker\%(RecursiveDir)%(Filename)%(Extension)</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
 

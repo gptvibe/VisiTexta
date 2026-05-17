@@ -16,4 +16,4 @@ VisiTexta Native follows the same native Windows shape as QuietScribe while keep
 
 The desktop app owns user state, paths, model downloads, history, exports, and diagnostics. Heavy OCR work is isolated behind `IOcrWorkerClient` and a JSON-lines worker protocol so worker crashes do not crash the UI.
 
-The current implementation includes the native shell, service layer, worker protocol, buildable worker process, model registry/download plumbing, and test coverage for core persistence/protocol behavior. The worker can invoke a local llama CLI for image OCR when runtime/model files are present; PDFium page rendering is scaffolded as the next engine slice.
+The current implementation includes the native shell, service layer, worker protocol, buildable worker process, model registry/download plumbing, and test coverage for core persistence/protocol behavior. The worker renders PDF pages locally through PDFium, sends PNG/JPG/PDF page images through the bundled llama multimodal CLI, streams JSON-lines progress/text events, and fails with recoverable local setup errors when a runtime, model, mmproj, or PDFium file is missing.
