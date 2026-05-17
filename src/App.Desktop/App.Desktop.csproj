@@ -8,7 +8,7 @@
     <Product>VisiTexta</Product>
     <Description>Local-first OCR for images and PDFs on Windows</Description>
     <Authors>gptvibe</Authors>
-    <Version>3.0.3</Version>
+    <Version>3.0.4</Version>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Platforms>x86;x64;ARM64</Platforms>

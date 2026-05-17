@@ -1,5 +1,15 @@
 # Release Notes
 
+## 3.0.4
+
+VisiTexta 3.0.4 fixes a native WinUI startup failure that left the process running without ever showing a window on some Windows systems.
+
+Highlights:
+
+- The main window shell is now constructed in code instead of depending on startup-time XAML parsing for the first window.
+- Startup failure details are now written to `portable-data\diagnostics\startup-errors.log` so native launch problems do not fail silently.
+- The portable release path is validated against the actual packaged app, not just the raw publish output.
+
 ## 3.0.3
 
 VisiTexta 3.0.3 makes the native WinUI desktop app the sole documented release path.
