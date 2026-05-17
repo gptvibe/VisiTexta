@@ -19,7 +19,7 @@ public sealed class ModelDownloadService : IModelDownloadService
         _paths = paths;
         _registry = registry;
         _httpClient = httpClient ?? new HttpClient();
-        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("VisiTexta-Native/0.3.0");
+        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("VisiTexta-Native/3.0.2");
     }
 
     public async Task<ModelDownloadResult> DownloadAsync(
@@ -188,56 +188,75 @@ public sealed class ModelDownloadService : IModelDownloadService
     {
         Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
         var partPath = targetPath + ".part";
+
+        if (await TryUseExistingFileAsync(repo, fileName, targetPath, metadata, requireChecksum, progress, cancellationToken))
+        {
+            if (File.Exists(partPath))
+            {
+                File.Delete(partPath);
+            }
+
+            return;
+        }
+
+        if (await TryPromoteCompletePartAsync(repo, fileName, partPath, targetPath, metadata, requireChecksum, progress, cancellationToken))
+        {
+            return;
+        }
+
         var resumeFrom = File.Exists(partPath) ? new FileInfo(partPath).Length : 0;
-        if (metadata.Size is not null && resumeFrom > metadata.Size.Value)
+        if (metadata.Size is not null && resumeFrom >= metadata.Size.Value)
         {
+            File.Delete(partPath);
             resumeFrom = 0;
         }
 
-        progress?.Report(new ModelDownloadProgress
+        long downloaded;
+        while (true)
         {
-            Repo = repo,
-            FileName = fileName,
-            DownloadedBytes = resumeFrom,
-            TotalBytes = metadata.Size,
-            Status = ModelDownloadStatus.Downloading,
-            Message = resumeFrom > 0 ? "Resuming partial download" : "Starting download"
-        });
-
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"https://huggingface.co/{repo}/resolve/main/{Uri.EscapeDataString(fileName)}");
-        if (resumeFrom > 0)
-        {
-            request.Headers.Range = new RangeHeaderValue(resumeFrom, null);
-        }
-
-        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        if (resumeFrom > 0 && response.StatusCode == HttpStatusCode.OK)
-        {
-            resumeFrom = 0;
-        }
-
-        response.EnsureSuccessStatusCode();
-        await using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
-        await using var output = new FileStream(partPath, resumeFrom > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read);
-        var buffer = new byte[1024 * 128];
-        var downloaded = resumeFrom;
-        int read;
-        while ((read = await input.ReadAsync(buffer, cancellationToken)) > 0)
-        {
-            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
-            downloaded += read;
             progress?.Report(new ModelDownloadProgress
             {
                 Repo = repo,
                 FileName = fileName,
-                DownloadedBytes = downloaded,
+                DownloadedBytes = resumeFrom,
                 TotalBytes = metadata.Size,
                 Status = ModelDownloadStatus.Downloading,
-                Message = "Downloading " + fileName
+                Message = resumeFrom > 0 ? "Resuming partial download" : "Starting download"
             });
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"https://huggingface.co/{repo}/resolve/main/{Uri.EscapeDataString(fileName)}");
+            if (resumeFrom > 0)
+            {
+                request.Headers.Range = new RangeHeaderValue(resumeFrom, null);
+            }
+
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (resumeFrom > 0 && response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
+            {
+                File.Delete(partPath);
+                resumeFrom = 0;
+                progress?.Report(new ModelDownloadProgress
+                {
+                    Repo = repo,
+                    FileName = fileName,
+                    DownloadedBytes = 0,
+                    TotalBytes = metadata.Size,
+                    Status = ModelDownloadStatus.Downloading,
+                    Message = "Partial download was stale; restarting"
+                });
+                continue;
+            }
+
+            if (resumeFrom > 0 && response.StatusCode == HttpStatusCode.OK)
+            {
+                resumeFrom = 0;
+            }
+
+            response.EnsureSuccessStatusCode();
+            downloaded = await WriteResponseToPartAsync(response, partPath, resumeFrom, repo, fileName, metadata, progress, cancellationToken);
+            break;
         }
 
-        await output.FlushAsync(cancellationToken);
         progress?.Report(new ModelDownloadProgress
         {
             Repo = repo,
@@ -277,6 +296,146 @@ public sealed class ModelDownloadService : IModelDownloadService
             Status = ModelDownloadStatus.Downloaded,
             Message = string.IsNullOrWhiteSpace(metadata.Sha256) ? "Download complete" : "Download complete and checksum verified"
         });
+    }
+
+    private static async Task<long> WriteResponseToPartAsync(
+        HttpResponseMessage response,
+        string partPath,
+        long resumeFrom,
+        string repo,
+        string fileName,
+        RemoteFileMetadata metadata,
+        IProgress<ModelDownloadProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        await using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
+        await using var output = new FileStream(partPath, resumeFrom > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read);
+        var buffer = new byte[1024 * 128];
+        var downloaded = resumeFrom;
+        int read;
+        while ((read = await input.ReadAsync(buffer, cancellationToken)) > 0)
+        {
+            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            downloaded += read;
+            progress?.Report(new ModelDownloadProgress
+            {
+                Repo = repo,
+                FileName = fileName,
+                DownloadedBytes = downloaded,
+                TotalBytes = metadata.Size,
+                Status = ModelDownloadStatus.Downloading,
+                Message = "Downloading " + fileName
+            });
+        }
+
+        await output.FlushAsync(cancellationToken);
+        return downloaded;
+    }
+
+    private async Task<bool> TryUseExistingFileAsync(
+        string repo,
+        string fileName,
+        string targetPath,
+        RemoteFileMetadata metadata,
+        bool requireChecksum,
+        IProgress<ModelDownloadProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(targetPath))
+        {
+            return false;
+        }
+
+        if (!await IsValidDownloadedFileAsync(targetPath, metadata, requireChecksum, cancellationToken))
+        {
+            File.Delete(targetPath);
+            return false;
+        }
+
+        progress?.Report(new ModelDownloadProgress
+        {
+            Repo = repo,
+            FileName = fileName,
+            DownloadedBytes = new FileInfo(targetPath).Length,
+            TotalBytes = metadata.Size,
+            Status = ModelDownloadStatus.Downloaded,
+            Message = "Model already downloaded"
+        });
+        return true;
+    }
+
+    private async Task<bool> TryPromoteCompletePartAsync(
+        string repo,
+        string fileName,
+        string partPath,
+        string targetPath,
+        RemoteFileMetadata metadata,
+        bool requireChecksum,
+        IProgress<ModelDownloadProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(partPath) || metadata.Size is null || new FileInfo(partPath).Length != metadata.Size.Value)
+        {
+            return false;
+        }
+
+        progress?.Report(new ModelDownloadProgress
+        {
+            Repo = repo,
+            FileName = fileName,
+            DownloadedBytes = metadata.Size.Value,
+            TotalBytes = metadata.Size,
+            Status = ModelDownloadStatus.Verifying,
+            Message = "Verifying completed partial download"
+        });
+
+        if (!await IsValidDownloadedFileAsync(partPath, metadata, requireChecksum, cancellationToken))
+        {
+            File.Delete(partPath);
+            return false;
+        }
+
+        if (File.Exists(targetPath))
+        {
+            File.Delete(targetPath);
+        }
+
+        File.Move(partPath, targetPath);
+        progress?.Report(new ModelDownloadProgress
+        {
+            Repo = repo,
+            FileName = fileName,
+            DownloadedBytes = metadata.Size.Value,
+            TotalBytes = metadata.Size,
+            Status = ModelDownloadStatus.Downloaded,
+            Message = "Completed partial download verified"
+        });
+        return true;
+    }
+
+    private async Task<bool> IsValidDownloadedFileAsync(
+        string path,
+        RemoteFileMetadata metadata,
+        bool requireChecksum,
+        CancellationToken cancellationToken)
+    {
+        if (metadata.Size is not null && new FileInfo(path).Length != metadata.Size.Value)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(metadata.Sha256))
+        {
+            var actual = await ComputeSha256Async(path, cancellationToken);
+            return actual.Equals(metadata.Sha256, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (requireChecksum)
+        {
+            throw new InvalidOperationException("Checksum verification is required for curated downloads, but Hugging Face did not provide one.");
+        }
+
+        return true;
     }
 
     private static async Task<string> ComputeSha256Async(string path, CancellationToken cancellationToken)

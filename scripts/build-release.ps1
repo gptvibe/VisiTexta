@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "3.0.1",
+    [string]$Version = "3.0.2",
     [string]$SignToolPath = $env:VISITEXTA_SIGNTOOL,
     [string]$CertificatePath = $env:VISITEXTA_CERT_PATH,
     [string]$CertificatePassword = $env:VISITEXTA_CERT_PASSWORD,
