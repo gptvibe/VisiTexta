@@ -1,11 +1,13 @@
 # Release
 
-Portable zip is the first packaging target.
+Portable zip is the shipping packaging target for the native WinUI app.
+
+Do not publish artifacts from `app/`. The public Windows release comes from `src/App.Desktop` plus `workers/ocr-worker` through the native release script.
 
 Build:
 
 ```powershell
-.\scripts\build-release.ps1 -Version 3.0.2
+.\scripts\build-release.ps1 -Version 3.0.3
 ```
 
 The release script publishes:
@@ -31,7 +33,7 @@ When a code-signing certificate is available, set these environment variables or
 ```powershell
 $env:VISITEXTA_CERT_PATH="C:\certs\VisiTexta.pfx"
 $env:VISITEXTA_CERT_PASSWORD="<password>"
-.\scripts\build-release.ps1 -Version 3.0.2
+.\scripts\build-release.ps1 -Version 3.0.3
 ```
 
 The script signs staged `.exe` files before zipping when a certificate is provided. Windows Smart App Control can still block unsigned portable builds, so public releases should use a trusted certificate and timestamp. Installer packaging is intentionally deferred until signing strategy is decided.

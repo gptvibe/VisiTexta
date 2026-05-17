@@ -1,6 +1,8 @@
 # VisiTexta App
 
-Desktop app package for VisiTexta 2.0.2 (Tauri + React + Rust).
+Legacy desktop app package for VisiTexta 2.0.2 (Tauri + React + Rust).
+
+This folder is not the shipping Windows-native app. Public releases come from the WinUI project under `src/App.Desktop` via `scripts/build-release.ps1`.
 
 ## Runtime architecture (2.0.2)
 - Model-only OCR path via local llama runtime binaries.
@@ -19,7 +21,7 @@ npm install
 npm run tauri:dev
 ```
 
-## Build
+## Legacy build
 ```bash
 npm run build
 npm run tauri:build

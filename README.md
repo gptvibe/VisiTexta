@@ -6,6 +6,8 @@ It runs locally on your PC. No cloud OCR API is required.
 
 This repo currently targets Windows behavior explicitly.
 
+Current release target: the native WinUI desktop app under `src/App.Desktop`. The legacy Tauri app under `app/` is kept only for reference and legacy development work; it is not the shipping Windows release.
+
 ## Who is this for?
 
 - Students who want text from notes or scanned pages.
@@ -158,10 +160,12 @@ dotnet run --project src/App.Desktop/App.Desktop.csproj -p:RuntimeIdentifier=win
 Build native portable release:
 
 ```powershell
-.\scripts\build-release.ps1
+\.\scripts\build-release.ps1 -Version 3.0.3
 ```
 
-The existing Tauri app remains available during migration:
+This command produces the Windows-native portable zip under `artifacts/release/`.
+
+Legacy Tauri app (not shipped; reference/dev only):
 
 From repo root:
 
@@ -171,7 +175,7 @@ npm install
 npm run tauri:dev
 ```
 
-Build release:
+Legacy bundle build:
 
 ```bash
 cd app
@@ -183,7 +187,5 @@ Release notes for packagers:
 
 - Portable packages should include a sibling `portable-data\` folder or `visitexta-portable.txt` marker so the mode is unambiguous even before first run.
 - Installer packages should be installed normally; app data lives under `%LOCALAPPDATA%\VisiTexta`, not in the install directory.
-- `npm run tauri:build:installer` builds the Windows installer bundles.
-- `npm run tauri:build:portable` builds a no-bundle release executable, stages `portable-data\`, and creates a portable zip.
-- `npm run release:qa` runs the release gate: frontend build, `cargo check`, warm benchmark gate, and cold benchmark gate.
-- `npm run benchmark:gate:warm` and `npm run benchmark:gate:cold` compare benchmark runs against the checked-in baselines in `app/benchmarks/baselines/`.
+- Public Windows releases should be produced with `\.\scripts\build-release.ps1`, not from `app/`.
+- The `app/` Tauri scripts remain available only for legacy validation and benchmark work.

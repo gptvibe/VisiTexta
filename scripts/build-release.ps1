@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "3.0.2",
+    [string]$Version = "3.0.3",
     [string]$SignToolPath = $env:VISITEXTA_SIGNTOOL,
     [string]$CertificatePath = $env:VISITEXTA_CERT_PATH,
     [string]$CertificatePassword = $env:VISITEXTA_CERT_PASSWORD,
@@ -48,9 +48,11 @@ function Copy-XamlBuildArtifacts([string]$DestinationRoot) {
     }
 
     $xamlRoot = Split-Path -Parent $priFile.FullName
+    $xamlRootUri = [System.Uri]::new(([System.IO.Path]::GetFullPath($xamlRoot).TrimEnd('\\') + '\\'))
     $xamlFiles = Get-ChildItem -LiteralPath $xamlRoot -Recurse -Include *.xbf,*.pri -File
     foreach ($file in $xamlFiles) {
-        $relative = [System.IO.Path]::GetRelativePath($xamlRoot, $file.FullName)
+        $fileUri = [System.Uri]::new([System.IO.Path]::GetFullPath($file.FullName))
+        $relative = [System.Uri]::UnescapeDataString($xamlRootUri.MakeRelativeUri($fileUri).ToString()).Replace('/', '\\')
         $destination = Join-Path $DestinationRoot $relative
         $destinationDirectory = Split-Path -Parent $destination
         New-Item -ItemType Directory -Force -Path $destinationDirectory | Out-Null

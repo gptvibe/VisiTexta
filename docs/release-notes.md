@@ -1,5 +1,15 @@
 # Release Notes
 
+## 3.0.3
+
+VisiTexta 3.0.3 makes the native WinUI desktop app the sole documented release path.
+
+Highlights:
+
+- README and release documentation now point packagers to `./scripts/build-release.ps1` for Windows-native shipping builds.
+- The legacy Tauri app under `app/` is now explicitly marked as reference/dev-only and is no longer presented as the active release target.
+- Native version metadata is aligned at 3.0.3 so the packaged app and native download user agent identify the same release.
+
 ## 2.0.2
 
 VisiTexta 2.0.2 finishes the desktop release path with deterministic release QA on the release workstation.
